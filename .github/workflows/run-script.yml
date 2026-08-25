@@ -14,3 +14,8 @@ jobs:
 
       - name: Show OS info
         run: cat /etc/os-release
+
+      - name: Run the script
+        run: |
+          chmod +x script.sh
+          ./script.sh
