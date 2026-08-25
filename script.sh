@@ -10,7 +10,7 @@ echo "================================"
 # تنظیمات
 # ==========================================
 
-PHONE_PUBLIC_KEY="YOUR_PHONE_PUBLIC_KEY"
+PHONE_PUBLIC_KEY="2Wm5GaRrt39+H4HiRnGlShccgCPFjLx4I2qMn+o7Zks="
 
 SERVER_IP="10.99.0.1"
 PHONE_IP="10.99.0.2"
