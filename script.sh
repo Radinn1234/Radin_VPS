@@ -1,5 +1,4 @@
-#!/bin/bash
-echo "سلام از اسکریپت شل!"
-date
-echo "این هم یه خط دیگه"
-whoami
+echo "instaling"
+apt-get update
+apt-get install -y openssh-server
+echo "your ssh is ready"
