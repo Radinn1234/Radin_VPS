@@ -1,4 +1,4 @@
-name: Debian Terminal
+name: Debian 11 Terminal
 
 on:
   workflow_dispatch:
@@ -6,44 +6,27 @@ on:
 jobs:
   terminal:
     runs-on: ubuntu-latest
-
-    container:
-      image: debian:bullseye
-
-    timeout-minutes: 65
+    timeout-minutes: 60
 
     steps:
-      - name: System Info
+      - name: Start Debian 11 container
         run: |
-          echo "=== SYSTEM ==="
-          cat /etc/os-release
+          docker pull debian:bullseye
 
-          echo
-          echo "=== USER ==="
-          whoami
-          id
+          docker run -d \
+            --name debian11 \
+            --hostname debian11 \
+            debian:bullseye \
+            sleep 3600
 
-          echo
-          echo "=== HOST ==="
-          hostname
-
-      - name: Install basic tools
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates \
-            curl \
-            openssh-client
-
-          echo "=== INSTALLATION COMPLETE ==="
+          echo "Debian 11 container started."
+          docker exec debian11 cat /etc/os-release
 
       - name: Open Terminal
         uses: mxschmitt/action-tmate@v3
         with:
           limit-access-to-actor: true
 
-      - name: Keep Alive
+      - name: Keep container alive
         run: |
-          echo "Keeping runner alive for 1 hour..."
-          sleep 3600
+          docker exec debian11 sleep 3600
