@@ -1,4 +1,4 @@
-name: Debian 11 - Tmate Terminal
+name: Debian 11 Terminal
 
 on:
   workflow_dispatch:
@@ -9,12 +9,8 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Start Debian 11 container
+      - name: Start Debian 11
         run: |
-          set -e
-
-          echo "=== Starting Debian 11 container ==="
-
           docker pull debian:bullseye
 
           docker run -d \
@@ -23,55 +19,39 @@ jobs:
             debian:bullseye \
             tail -f /dev/null
 
-          echo "Container started:"
           docker ps
 
-      - name: Install tmate on runner
+      - name: Install tmate
         run: |
-          set -e
-
-          echo "=== Installing tmate on Ubuntu runner ==="
-
           sudo apt-get update
           sudo apt-get install -y tmate
 
       - name: Start tmate
         run: |
-          set -e
+          echo "Starting tmate..."
 
-          echo "=== Starting tmate ==="
+          tmate -S /tmp/tmate.sock new-session -d
 
-          tmate new-session -d
+          sleep 5
 
-          echo "=== Waiting for tmate connection ==="
-
-          for i in $(seq 1 30); do
-            SSH_CMD=$(tmate display -p '#{tmate_ssh}' 2>/dev/null || true)
-
-            if [ -n "$SSH_CMD" ] && [ "$SSH_CMD" != "undefined" ]; then
-              echo ""
-              echo "=============================================="
-              echo " TMATE SSH CONNECTION"
-              echo "=============================================="
-              echo "$SSH_CMD"
-              echo "=============================================="
-              echo ""
-              break
-            fi
-
-            sleep 2
-          done
-
-          echo "Runner is ready."
-
-      - name: Keep runner alive
-        run: |
-          echo "=============================================="
-          echo " Connected terminal:"
-          echo "   Ubuntu GitHub Runner"
           echo ""
-          echo " Debian 11 container:"
-          echo "   docker exec -it debian11 bash"
-          echo "=============================================="
+          echo "=============================="
+          echo "TMATE:"
+          echo "=============================="
+
+          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
+
+          echo ""
+          echo "=============================="
+          echo "WEB:"
+          echo "=============================="
+
+          tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
+
+          echo ""
+          echo "=============================="
+          echo "Debian command:"
+          echo "docker exec -it debian11 bash"
+          echo "=============================="
 
           sleep 1h
