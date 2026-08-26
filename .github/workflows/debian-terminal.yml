@@ -15,25 +15,35 @@ jobs:
     steps:
       - name: System Info
         run: |
+          echo "=== SYSTEM ==="
+          cat /etc/os-release
+
+          echo
           echo "=== USER ==="
           whoami
           id
 
           echo
-          echo "=== OS ==="
-          cat /etc/os-release
-
-          echo
           echo "=== HOST ==="
           hostname
+
+      - name: Install basic tools
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            openssh-client
+
+          echo "=== INSTALLATION COMPLETE ==="
 
       - name: Open Terminal
         uses: mxschmitt/action-tmate@v3
         with:
           limit-access-to-actor: true
 
-      - name: Keep Runner Alive
+      - name: Keep Alive
         run: |
-          echo "Terminal session should remain available."
-          echo "Keeping the job alive for 1 hour..."
+          echo "Keeping runner alive for 1 hour..."
           sleep 3600
