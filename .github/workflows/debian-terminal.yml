@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Start Debian 11 container
+      - name: Create Debian 11 container
         run: |
           docker pull debian:bullseye
 
@@ -19,10 +19,13 @@ jobs:
             debian:bullseye \
             tail -f /dev/null
 
-          echo "Debian 11 container is running."
+          echo "================================="
+          echo "Debian 11 container started"
+          echo "================================="
+
           docker ps
 
-      - name: Open tmate terminal
+      - name: Open terminal
         uses: mxschmitt/action-tmate@v3
         with:
           limit-access-to-actor: true
