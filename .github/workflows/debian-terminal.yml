@@ -175,10 +175,10 @@ jobs:
       - name: Keep Runner Alive
         run: |
           echo ""
-          echo "Runner will remain online for 1 hour."
+          echo "Runner will remain online for 6 hours."
           echo ""
 
           while true; do
             echo "[$(date)] Runner alive"
-            sleep 6h
+            sleep 300
           done
