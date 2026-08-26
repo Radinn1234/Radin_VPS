@@ -1,0 +1,30 @@
+name: Debian Root Terminal
+
+on:
+  workflow_dispatch:
+
+jobs:
+  terminal:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bullseye
+
+    timeout-minutes: 180
+
+    steps:
+      - name: Show system info
+        run: |
+          echo "=== System ==="
+          cat /etc/os-release
+          echo
+          echo "=== User ==="
+          whoami
+          id
+          echo
+          echo "=== Hostname ==="
+          hostname
+
+      - name: Open Root Terminal
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
