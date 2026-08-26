@@ -6,27 +6,36 @@ on:
 jobs:
   terminal:
     runs-on: ubuntu-latest
+
+    container:
+      image: debian:bullseye
+
     timeout-minutes: 60
 
     steps:
-      - name: Start Debian 11 container
+      - name: Setup tmate
         run: |
-          docker pull debian:bullseye
+          set -eux
 
-          docker run -d \
-            --name debian11 \
-            --hostname debian11 \
-            debian:bullseye \
-            sleep 3600
+          echo "=== OS ==="
+          cat /etc/os-release
 
-          echo "Debian 11 container started."
-          docker exec debian11 cat /etc/os-release
+          echo "=== Installing tmate ==="
+          apt-get update
+          apt-get install -y tmate
 
-      - name: Open Terminal
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: true
+          echo "=== Starting tmate ==="
+          tmate -S /tmp/tmate.sock new-session -d
 
-      - name: Keep container alive
-        run: |
-          docker exec debian11 sleep 3600
+          tmate -S /tmp/tmate.sock wait tmate-ready
+
+          echo
+          echo "======================================"
+          echo "TMATE SSH CONNECTION:"
+          echo "======================================"
+          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
+          echo "======================================"
+
+          echo
+          echo "Debian 11 terminal is running..."
+          sleep 1h
