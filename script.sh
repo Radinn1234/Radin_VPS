@@ -2,174 +2,112 @@
 set -e
 
 # ==============================
-# CONFIG
+#       YOUR SETTINGS
 # ==============================
 
-ROOT_PASSWORD='radin123#'
-
-# اختیاری:
-# کلید Tailscale را اینجا بگذار
-# مثال: tskey-auth-xxxxxxxx
-TS_AUTHKEY='tskey-auth-kQPFceLKXK11CNTRL-e82oujkhKE2vr4BYYL7YE2EMZ5BWNfxBX'
+ROOT_PASSWORD="radin123#"
+TS_AUTHKEY="tskey-auth-kMVzgEtvg921CNTRL-irwUFn8nqbNLo7fRMy3kbNxqN1324Zp8b"
 
 # ==============================
-# CHECK ROOT
-# ==============================
-
-if [ "$(id -u)" != "0" ]; then
-    echo "ERROR: Run this script as root."
-    exit 1
-fi
-
-if [ "$ROOT_PASSWORD" = "CHANGE_ME_TO_A_STRONG_PASSWORD" ] || [ -z "$ROOT_PASSWORD" ]; then
-    echo "ERROR: Set ROOT_PASSWORD in the script first."
-    exit 1
-fi
-
-echo "=============================="
-echo " Installing packages"
-echo "=============================="
 
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y curl openssh-server
+apt-get install -y curl openssh-server iproute2
 
-# ==============================
-# ROOT PASSWORD
-# ==============================
-
-echo "Setting root password..."
-echo "root:$ROOT_PASSWORD" | chpasswd
-
-# ==============================
-# SSH CONFIG
-# ==============================
-
-echo "Configuring SSH..."
-
-mkdir -p /run/sshd
-
-# Root login
-if grep -qE '^[#[:space:]]*PermitRootLogin' /etc/ssh/sshd_config; then
-    sed -i 's/^[#[:space:]]*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-else
-    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
-fi
-
-# Password authentication
-if grep -qE '^[#[:space:]]*PasswordAuthentication' /etc/ssh/sshd_config; then
-    sed -i 's/^[#[:space:]]*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-else
-    echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
-fi
-
-# Validate SSH configuration
-/usr/sbin/sshd -t
-
-# ==============================
-# INSTALL TAILSCALE
-# ==============================
-
-echo "=============================="
-echo " Installing Tailscale"
-echo "=============================="
-
+echo "=== Installing Tailscale ==="
 curl -fsSL https://tailscale.com/install.sh | sh
 
-# ==============================
-# START TAILSCALED
-# ==============================
+echo "=== Configuring SSH ==="
 
-echo "Starting tailscaled..."
+echo "root:$ROOT_PASSWORD" | chpasswd
+
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+grep -q '^PermitRootLogin' /etc/ssh/sshd_config || \
+    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
+
+grep -q '^PasswordAuthentication' /etc/ssh/sshd_config || \
+    echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
+
+mkdir -p /run/sshd
+/usr/sbin/sshd -t
+
+echo "=== Starting tailscaled ==="
 
 mkdir -p /var/lib/tailscale
-mkdir -p /var/run/tailscale
+mkdir -p /run/tailscale
 
-# اگر قبلاً اجرا شده باشد، نادیده بگیر
-if ! pgrep -x tailscaled >/dev/null 2>&1; then
-    tailscaled \
-        --state=/var/lib/tailscale/tailscaled.state \
-        > /var/log/tailscaled.log 2>&1 &
-fi
+tailscaled \
+    --state=/var/lib/tailscale/tailscaled.state \
+    --socket=/run/tailscale/tailscaled.sock \
+    > /tmp/tailscaled.log 2>&1 &
 
-echo "Waiting for tailscaled..."
+echo "tailscaled started"
 
-for i in $(seq 1 20); do
-    if tailscale status >/dev/null 2>&1; then
-        echo "tailscaled is ready."
+echo "=== Waiting for tailscaled ==="
+
+READY=0
+
+for i in $(seq 1 30); do
+    if tailscale \
+        --socket=/run/tailscale/tailscaled.sock \
+        status >/dev/null 2>&1
+    then
+        READY=1
+        echo "tailscaled is ready"
         break
     fi
+
     sleep 1
 done
 
-# ==============================
-# TAILSCALE LOGIN
-# ==============================
-
-echo "=============================="
-echo " Connecting to Tailscale"
-echo "=============================="
-
-if [ -n "$TS_AUTHKEY" ]; then
-    tailscale up --authkey="$TS_AUTHKEY"
-else
-    echo ""
-    echo "No Tailscale auth key was provided."
-    echo "Run:"
-    echo ""
-    echo "    tailscale up"
-    echo ""
-    echo "and open the authentication URL."
-    echo ""
+if [ "$READY" != "1" ]; then
+    echo "ERROR: tailscaled failed to start"
+    echo "========== LOG =========="
+    cat /tmp/tailscaled.log
+    exit 1
 fi
 
-# ==============================
-# START SSH
-# ==============================
+echo "=== Connecting to Tailscale ==="
 
-echo "Starting SSH..."
+tailscale \
+    --socket=/run/tailscale/tailscaled.sock \
+    up \
+    --auth-key="$TS_AUTHKEY"
 
-mkdir -p /run/sshd
+echo "=== Starting SSH ==="
 
-if ! pgrep -x sshd >/dev/null 2>&1; then
-    /usr/sbin/sshd
-fi
-
-# ==============================
-# INFORMATION
-# ==============================
+/usr/sbin/sshd
 
 echo ""
 echo "=============================="
-echo "        TAILSCALE INFO"
+echo "       TAILSCALE STATUS"
 echo "=============================="
 
-echo "Tailscale status:"
-tailscale status || true
-
-echo ""
-echo "Tailscale IPv4:"
-tailscale ip -4 || true
+tailscale \
+    --socket=/run/tailscale/tailscaled.sock \
+    status
 
 echo ""
 echo "=============================="
-echo "          SSH INFO"
+echo "       TAILSCALE IP"
+echo "=============================="
+
+tailscale \
+    --socket=/run/tailscale/tailscaled.sock \
+    ip -4
+
+echo ""
+echo "=============================="
+echo "          SSH READY"
 echo "=============================="
 
 echo "User: root"
 echo "Port: 22"
-echo "SSH: READY"
 
 echo ""
-echo "=============================="
-echo "         LOG FILES"
-echo "=============================="
-
-echo "Tailscale log:"
-echo "/var/log/tailscaled.log"
-
-echo ""
-echo "Done."
+echo "Keeping runner alive for 5 minutes..."
 
 sleep 5m
