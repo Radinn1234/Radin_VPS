@@ -1,47 +1,47 @@
+#!/bin/bash
+set -e
+
+# =========================
+# تنظیمات
+# =========================
+ROOT_PASSWORD='radin123#'
+
+# =========================
+# نصب
+# =========================
 apt-get update
-apt-get install -y util-linux
-echo "=============================="
-echo "        SYSTEM INFO"
-echo "=============================="
+apt-get install -y curl openssh-server
 
-echo
-echo "=== CPU ==="
-echo "Logical CPUs:"
-nproc
+# =========================
+# تنظیم پسورد root
+# =========================
+echo "root:${ROOT_PASSWORD}" | chpasswd
 
-echo
-echo "CPU details:"
-lscpu | grep -E '^(Architecture|CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|Model name)'
+# =========================
+# فعال کردن ورود root با SSH
+# =========================
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
-echo
-echo "=== RAM ==="
-free -h
+# =========================
+# نصب Tailscale
+# =========================
+curl -fsSL https://tailscale.com/install.sh | sh
 
-echo
-echo "=== DISK ==="
-df -h /
+# اتصال به Tailnet
+tailscale up
 
-echo
-echo "=== FILESYSTEM ==="
-df -T /
+# =========================
+# اجرای SSH
+# =========================
+mkdir -p /run/sshd
+/usr/sbin/sshd
 
-echo
-echo "=== CPU LIMIT ==="
-cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo "cgroup v1/unknown"
+echo "=== Tailscale IP ==="
+tailscale ip -4
 
-echo
-echo "=== MEMORY LIMIT ==="
-cat /sys/fs/cgroup/memory.max 2>/dev/null || echo "cgroup v1/unknown"
+echo "=== SSH ==="
+echo "User: root"
+echo "SSH is ready."
 
-echo
-echo "=== KERNEL ==="
-uname -a
-
-echo
-echo "=== HOSTNAME ==="
-hostname
-
-echo
-echo "=============================="
-echo "       INFO COMPLETE"
-echo "=============================="
+sleep 5m
