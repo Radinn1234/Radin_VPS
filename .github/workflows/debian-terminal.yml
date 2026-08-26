@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Create Debian 11 container
         run: |
+          set -e
+
           docker pull debian:bullseye
 
           docker run -d \
@@ -19,13 +21,65 @@ jobs:
             debian:bullseye \
             tail -f /dev/null
 
-          echo "================================="
-          echo "Debian 11 container started"
-          echo "================================="
-
+          echo "Debian 11 container:"
           docker ps
 
-      - name: Open terminal
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: true
+      - name: Download static tmate
+        run: |
+          set -e
+
+          curl -L \
+            https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz \
+            -o /tmp/tmate.tar.xz
+
+          mkdir -p /tmp/tmate
+
+          tar -xJf /tmp/tmate.tar.xz \
+            -C /tmp/tmate \
+            --strip-components=1
+
+          chmod +x /tmp/tmate/tmate
+
+          echo "tmate version:"
+          /tmp/tmate/tmate -V
+
+      - name: Start tmate
+        run: |
+          set -e
+
+          echo "Starting tmate..."
+
+          /tmp/tmate/tmate -S /tmp/tmate.sock new-session -d
+
+          echo "Waiting for tmate..."
+
+          for i in $(seq 1 60); do
+            SSH_CMD=$(
+              /tmp/tmate/tmate \
+                -S /tmp/tmate.sock \
+                display -p '#{tmate_ssh}' 2>/dev/null || true
+            )
+
+            if [ -n "$SSH_CMD" ] && [ "$SSH_CMD" != "undefined" ]; then
+              echo ""
+              echo "=========================================="
+              echo "TMATE SSH"
+              echo "=========================================="
+              echo "$SSH_CMD"
+              echo "=========================================="
+              echo ""
+
+              break
+            fi
+
+            sleep 2
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "DEBIAN 11"
+          echo "=========================================="
+          echo "docker exec -it debian11 bash"
+          echo "=========================================="
+
+          sleep 1h
