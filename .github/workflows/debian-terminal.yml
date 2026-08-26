@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Start Debian 11
+      - name: Start Debian 11 container
         run: |
           docker pull debian:bullseye
 
@@ -19,39 +19,10 @@ jobs:
             debian:bullseye \
             tail -f /dev/null
 
+          echo "Debian 11 container is running."
           docker ps
 
-      - name: Install tmate
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y tmate
-
-      - name: Start tmate
-        run: |
-          echo "Starting tmate..."
-
-          tmate -S /tmp/tmate.sock new-session -d
-
-          sleep 5
-
-          echo ""
-          echo "=============================="
-          echo "TMATE:"
-          echo "=============================="
-
-          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
-
-          echo ""
-          echo "=============================="
-          echo "WEB:"
-          echo "=============================="
-
-          tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
-
-          echo ""
-          echo "=============================="
-          echo "Debian command:"
-          echo "docker exec -it debian11 bash"
-          echo "=============================="
-
-          sleep 1h
+      - name: Open tmate terminal
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
