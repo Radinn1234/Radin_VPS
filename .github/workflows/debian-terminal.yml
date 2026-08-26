@@ -1,4 +1,4 @@
-name: Debian 11 Terminal
+name: Ubuntu Runner + Tailscale + SSH + Debian 11
 
 on:
   workflow_dispatch:
@@ -9,11 +9,127 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Create Debian 11 container
+
+      # ==========================================
+      # TAILSCALE
+      # ==========================================
+      - name: Install Tailscale
         run: |
           set -e
 
+          echo "=== Installing Tailscale ==="
+
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+          sudo systemctl enable --now tailscaled
+
+          echo "Tailscale installed."
+
+      # ==========================================
+      # CONNECT RUNNER TO TAILSCALE
+      # ==========================================
+      - name: Connect Runner to Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -e
+
+          echo "=== Connecting Runner to Tailscale ==="
+
+          if [ -z "$TS_AUTHKEY" ]; then
+            echo "ERROR: TS_AUTHKEY secret is empty."
+            exit 1
+          fi
+
+          sudo tailscale up \
+            --auth-key="$TS_AUTHKEY" \
+            --hostname="github-runner-${GITHUB_RUN_ID}"
+
+          echo ""
+          echo "=== Tailscale Status ==="
+          sudo tailscale status
+
+          echo ""
+          echo "=== Tailscale IPv4 ==="
+          sudo tailscale ip -4
+
+      # ==========================================
+      # SSH SERVER
+      # ==========================================
+      - name: Configure SSH
+        env:
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          set -e
+
+          echo "=== Installing OpenSSH Server ==="
+
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+
+          echo "=== Preparing SSH ==="
+
+          sudo mkdir -p /home/runner/.ssh
+
+          echo "$SSH_PUBLIC_KEY" | sudo tee \
+            /home/runner/.ssh/authorized_keys > /dev/null
+
+          sudo chmod 700 /home/runner/.ssh
+          sudo chmod 600 /home/runner/.ssh/authorized_keys
+
+          sudo chown -R runner:runner /home/runner/.ssh
+
+          echo "=== Configuring SSH ==="
+
+          sudo mkdir -p /run/sshd
+
+          sudo sed -i \
+            's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
+            /etc/ssh/sshd_config
+
+          sudo sed -i \
+            's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' \
+            /etc/ssh/sshd_config
+
+          sudo systemctl enable ssh
+          sudo systemctl restart ssh
+
+          echo "SSH server started."
+
+      # ==========================================
+      # VERIFY SSH
+      # ==========================================
+      - name: Verify SSH
+        run: |
+          set -e
+
+          echo "=== SSH Status ==="
+          sudo systemctl status ssh --no-pager || true
+
+          echo ""
+          echo "=== SSH Listening ==="
+          sudo ss -tlnp | grep ':22' || true
+
+          echo ""
+          echo "=== SSH Public Key Installed ==="
+          sudo test -s /home/runner/.ssh/authorized_keys
+
+          echo "SSH key is installed."
+
+      # ==========================================
+      # DOCKER / DEBIAN 11
+      # ==========================================
+      - name: Start Debian 11 Container
+        run: |
+          set -e
+
+          echo "=== Pulling Debian 11 Bullseye ==="
+
           docker pull debian:bullseye
+
+          echo "=== Starting Debian 11 ==="
+
+          docker rm -f debian11 2>/dev/null || true
 
           docker run -d \
             --name debian11 \
@@ -21,65 +137,48 @@ jobs:
             debian:bullseye \
             tail -f /dev/null
 
-          echo "Debian 11 container:"
-          docker ps
+          echo ""
+          echo "=== Debian OS ==="
 
-      - name: Download static tmate
+          docker exec debian11 cat /etc/os-release
+
+      # ==========================================
+      # CONNECTION INFORMATION
+      # ==========================================
+      - name: Show Connection Information
         run: |
-          set -e
+          echo ""
+          echo "=========================================="
+          echo "        GITHUB RUNNER READY"
+          echo "=========================================="
 
-          curl -L \
-            https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz \
-            -o /tmp/tmate.tar.xz
+          IP=$(sudo tailscale ip -4)
 
-          mkdir -p /tmp/tmate
+          echo ""
+          echo "Tailscale IP:"
+          echo "$IP"
 
-          tar -xJf /tmp/tmate.tar.xz \
-            -C /tmp/tmate \
-            --strip-components=1
+          echo ""
+          echo "SSH:"
+          echo "ssh runner@$IP"
 
-          chmod +x /tmp/tmate/tmate
-
-          echo "tmate version:"
-          /tmp/tmate/tmate -V
-
-      - name: Start tmate
-        run: |
-          set -e
-
-          echo "Starting tmate..."
-
-          /tmp/tmate/tmate -S /tmp/tmate.sock new-session -d
-
-          echo "Waiting for tmate..."
-
-          for i in $(seq 1 60); do
-            SSH_CMD=$(
-              /tmp/tmate/tmate \
-                -S /tmp/tmate.sock \
-                display -p '#{tmate_ssh}' 2>/dev/null || true
-            )
-
-            if [ -n "$SSH_CMD" ] && [ "$SSH_CMD" != "undefined" ]; then
-              echo ""
-              echo "=========================================="
-              echo "TMATE SSH"
-              echo "=========================================="
-              echo "$SSH_CMD"
-              echo "=========================================="
-              echo ""
-
-              break
-            fi
-
-            sleep 2
-          done
+          echo ""
+          echo "After SSH:"
+          echo "docker exec -it debian11 bash"
 
           echo ""
           echo "=========================================="
-          echo "DEBIAN 11"
-          echo "=========================================="
-          echo "docker exec -it debian11 bash"
-          echo "=========================================="
 
-          sleep 1h
+      # ==========================================
+      # KEEP ALIVE
+      # ==========================================
+      - name: Keep Runner Alive
+        run: |
+          echo ""
+          echo "Runner will remain online for 1 hour."
+          echo ""
+
+          while true; do
+            echo "[$(date)] Runner alive"
+            sleep 300
+          done
