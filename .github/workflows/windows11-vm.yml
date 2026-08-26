@@ -12,26 +12,26 @@ jobs:
     steps:
 
     # ==========================
-    # Install packages
+    # Install KVM/QEMU
     # ==========================
-    - name: Install KVM QEMU
+    - name: Install KVM packages
       run: |
         sudo apt update
 
         sudo apt install -y \
           qemu-kvm \
           qemu-system-x86 \
+          qemu-utils \
           ovmf \
           swtpm \
-          spice-server \
           tmux \
           wget
 
-        sudo usermod -aG kvm $USER || true
+        kvm-ok || true
 
 
     # ==========================
-    # Tailscale
+    # Install Tailscale
     # ==========================
     - name: Install Tailscale
       run: |
@@ -40,6 +40,9 @@ jobs:
         sudo systemctl enable --now tailscaled
 
 
+    # ==========================
+    # Connect Tailscale
+    # ==========================
     - name: Connect Tailscale
       env:
         TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
@@ -47,11 +50,10 @@ jobs:
 
         sudo tailscale up \
           --auth-key="$TS_AUTHKEY" \
-          --hostname="win11-vm-${GITHUB_RUN_ID}"
+          --hostname="windows-vm-${GITHUB_RUN_ID}"
 
-        echo "TAILSCALE IP:"
+        echo "Tailscale IP:"
         sudo tailscale ip -4
-
 
 
     # ==========================
@@ -66,11 +68,10 @@ jobs:
         file Windows11.iso
 
 
-
     # ==========================
-    # Create disk
+    # Create VM disk
     # ==========================
-    - name: Create Windows Disk
+    - name: Create VM disk
       run: |
 
         qemu-img create \
@@ -79,30 +80,28 @@ jobs:
         80G
 
 
-
     # ==========================
-    # Create TPM
+    # TPM 2.0
     # ==========================
-    - name: Create TPM
+    - name: Start TPM
       run: |
 
-        mkdir -p ~/win11-tpm
+        mkdir -p /tmp/win11-tpm
 
-        swtpm socket \
+        sudo swtpm socket \
           --tpm2 \
-          --tpmstate dir=$HOME/win11-tpm \
-          --ctrl type=unixio,path=$HOME/win11-tpm/swtpm.sock \
+          --tpmstate dir=/tmp/win11-tpm \
+          --ctrl type=unixio,path=/tmp/win11-tpm/swtpm.sock \
           --daemon
 
 
-
     # ==========================
-    # Start Windows VM
+    # Start VM
     # ==========================
     - name: Start Windows VM
       run: |
 
-        tmux new-session -d -s win11 "
+        tmux new-session -d -s win11 '
 
         sudo qemu-system-x86_64 \
           -enable-kvm \
@@ -115,40 +114,35 @@ jobs:
           -drive file=win11.qcow2,format=qcow2 \
           -cdrom Windows11.iso \
           -boot d \
-          -chardev socket,id=chrtpm,path=$HOME/win11-tpm/swtpm.sock \
+          -chardev socket,id=chrtpm,path=/tmp/win11-tpm/swtpm.sock \
           -tpmdev emulator,id=tpm0,chardev=chrtpm \
           -device tpm-tis,tpmdev=tpm0 \
           -spice addr=0.0.0.0,port=5900,disable-ticketing=on \
           -vga qxl
 
-        "
-
+        '
 
 
     # ==========================
-    # Show info
+    # Info
     # ==========================
-    - name: Connection Info
+    - name: Show Connection
       run: |
 
-        echo "=============================="
-        echo "Windows VM Started"
         echo "=============================="
 
         IP=$(sudo tailscale ip -4)
 
+        echo "Windows VM is running"
         echo ""
         echo "SPICE:"
         echo "spice://$IP:5900"
 
-        echo ""
-        echo "Use Virt Viewer"
         echo "=============================="
 
 
-
     # ==========================
-    # Keep alive
+    # Keep Alive
     # ==========================
     - name: Keep Alive
       run: |
