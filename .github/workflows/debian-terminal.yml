@@ -1,30 +1,39 @@
-name: Debian Debug
+name: Debian Terminal
 
 on:
   workflow_dispatch:
 
 jobs:
-  debug:
+  terminal:
     runs-on: ubuntu-latest
+
     container:
       image: debian:bullseye
 
-    timeout-minutes: 30
+    timeout-minutes: 65
 
     steps:
-      - name: System info
+      - name: System Info
         run: |
-          echo "User:"
+          echo "=== USER ==="
           whoami
-          echo
-          echo "OS:"
-          cat /etc/os-release
-          echo
-          echo "Kernel:"
-          uname -a
+          id
 
-      - name: Debug terminal
-        if: ${{ failure() }}
+          echo
+          echo "=== OS ==="
+          cat /etc/os-release
+
+          echo
+          echo "=== HOST ==="
+          hostname
+
+      - name: Open Terminal
         uses: mxschmitt/action-tmate@v3
         with:
           limit-access-to-actor: true
+
+      - name: Keep Runner Alive
+        run: |
+          echo "Terminal session should remain available."
+          echo "Keeping the job alive for 1 hour..."
+          sleep 3600
