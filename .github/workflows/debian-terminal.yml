@@ -1,4 +1,4 @@
-name: Debian 11 Terminal
+name: Debian 11 - Tmate Terminal
 
 on:
   workflow_dispatch:
@@ -6,36 +6,72 @@ on:
 jobs:
   terminal:
     runs-on: ubuntu-latest
-
-    container:
-      image: debian:bullseye
-
     timeout-minutes: 60
 
     steps:
-      - name: Setup tmate
+      - name: Start Debian 11 container
         run: |
-          set -eux
+          set -e
 
-          echo "=== OS ==="
-          cat /etc/os-release
+          echo "=== Starting Debian 11 container ==="
 
-          echo "=== Installing tmate ==="
-          apt-get update
-          apt-get install -y tmate
+          docker pull debian:bullseye
+
+          docker run -d \
+            --name debian11 \
+            --hostname debian11 \
+            debian:bullseye \
+            tail -f /dev/null
+
+          echo "Container started:"
+          docker ps
+
+      - name: Install tmate on runner
+        run: |
+          set -e
+
+          echo "=== Installing tmate on Ubuntu runner ==="
+
+          sudo apt-get update
+          sudo apt-get install -y tmate
+
+      - name: Start tmate
+        run: |
+          set -e
 
           echo "=== Starting tmate ==="
-          tmate -S /tmp/tmate.sock new-session -d
 
-          tmate -S /tmp/tmate.sock wait tmate-ready
+          tmate new-session -d
 
-          echo
-          echo "======================================"
-          echo "TMATE SSH CONNECTION:"
-          echo "======================================"
-          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
-          echo "======================================"
+          echo "=== Waiting for tmate connection ==="
 
-          echo
-          echo "Debian 11 terminal is running..."
+          for i in $(seq 1 30); do
+            SSH_CMD=$(tmate display -p '#{tmate_ssh}' 2>/dev/null || true)
+
+            if [ -n "$SSH_CMD" ] && [ "$SSH_CMD" != "undefined" ]; then
+              echo ""
+              echo "=============================================="
+              echo " TMATE SSH CONNECTION"
+              echo "=============================================="
+              echo "$SSH_CMD"
+              echo "=============================================="
+              echo ""
+              break
+            fi
+
+            sleep 2
+          done
+
+          echo "Runner is ready."
+
+      - name: Keep runner alive
+        run: |
+          echo "=============================================="
+          echo " Connected terminal:"
+          echo "   Ubuntu GitHub Runner"
+          echo ""
+          echo " Debian 11 container:"
+          echo "   docker exec -it debian11 bash"
+          echo "=============================================="
+
           sleep 1h
