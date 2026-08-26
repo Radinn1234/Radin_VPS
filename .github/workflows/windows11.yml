@@ -11,9 +11,6 @@ jobs:
 
     steps:
 
-    # --------------------------
-    # Install requirements
-    # --------------------------
     - name: Install packages
       run: |
         sudo apt update
@@ -24,17 +21,14 @@ jobs:
           qemu-utils \
           ovmf \
           swtpm \
+          genisoimage \
           tmux \
           wget \
-          genisoimage \
           cpu-checker
 
         kvm-ok || true
 
 
-    # --------------------------
-    # Tailscale
-    # --------------------------
     - name: Install Tailscale
       run: |
         curl -fsSL https://tailscale.com/install.sh | sh
@@ -44,118 +38,32 @@ jobs:
     - name: Connect Tailscale
       env:
         TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
-
       run: |
-
         sudo tailscale up \
           --auth-key="$TS_AUTHKEY" \
-          --hostname="windows11-${GITHUB_RUN_ID}"
+          --hostname="win11-${GITHUB_RUN_ID}"
 
-        echo "IP:"
         sudo tailscale ip -4
 
 
-
-    # --------------------------
-    # Windows ISO
-    # --------------------------
     - name: Download Windows ISO
       run: |
-
         wget -O Windows11.iso \
         "https://mirror.hep.gg/ISO/Windows/11/Win11_25H2_EnglishInternational_x64_v2.iso"
 
-        file Windows11.iso
+        ls -lh Windows11.iso
 
 
-
-    # --------------------------
-    # Create unattended file
-    # --------------------------
-    - name: Create autounattend.xml
+    - name: Create Windows disk
       run: |
-
-        cat > autounattend.xml <<'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-
-<settings pass="windowsPE">
-
-<component
-name="Microsoft-Windows-Setup"
-processorArchitecture="amd64"
-publicKeyToken="31bf3856ad364e35"
-language="neutral"
-versionScope="nonSxS">
-
-
-<RunSynchronous>
-
-<RunSynchronousCommand wcm:action="add"
-xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-<Order>1</Order>
-<Path>cmd /c reg add HKLM\SYSTEM\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
-</RunSynchronousCommand>
-
-
-<RunSynchronousCommand wcm:action="add"
-xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-<Order>2</Order>
-<Path>cmd /c reg add HKLM\SYSTEM\Setup\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
-</RunSynchronousCommand>
-
-
-<RunSynchronousCommand wcm:action="add"
-xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-<Order>3</Order>
-<Path>cmd /c reg add HKLM\SYSTEM\Setup\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
-</RunSynchronousCommand>
-
-
-</RunSynchronous>
-
-</component>
-
-</settings>
-
-</unattend>
-EOF
-
-
-
-    # --------------------------
-    # Make ISO
-    # --------------------------
-    - name: Create unattended ISO
-      run: |
-
-        genisoimage \
-        -o autounattend.iso \
-        -V AUTOUNATTEND \
-        autounattend.xml
-
-
-
-    # --------------------------
-    # Create disk
-    # --------------------------
-    - name: Create disk
-      run: |
-
         qemu-img create \
-        -f qcow2 \
-        win11.qcow2 \
-        80G
+          -f qcow2 \
+          win11.qcow2 \
+          80G
 
 
-
-    # --------------------------
-    # TPM
-    # --------------------------
-    - name: Start TPM
+    - name: Create TPM
       run: |
-
         mkdir -p /tmp/win11-tpm
 
         sudo swtpm socket \
@@ -165,68 +73,46 @@ EOF
           --daemon
 
 
-
-    # --------------------------
-    # Start VM
-    # --------------------------
     - name: Start Windows VM
       run: |
 
-        tmux new-session -d -s win11 '
-
-        sudo qemu-system-x86_64 \
+        tmux new-session -d -s win11 \
+        "sudo qemu-system-x86_64 \
           -enable-kvm \
           -machine q35,smm=on \
           -cpu host \
           -smp 3 \
           -m 8192 \
-          \
           -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
           -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
-          \
           -drive file=win11.qcow2,format=qcow2 \
-          \
           -cdrom Windows11.iso \
-          -drive file=autounattend.iso,media=cdrom \
-          \
           -boot d \
-          \
           -chardev socket,id=chrtpm,path=/tmp/win11-tpm/swtpm.sock \
           -tpmdev emulator,id=tpm0,chardev=chrtpm \
           -device tpm-tis,tpmdev=tpm0 \
-          \
           -spice addr=0.0.0.0,port=5900,disable-ticketing=on \
-          -vga qxl
-
-        '
+          -vga qxl"
 
 
-
-    # --------------------------
-    # Info
-    # --------------------------
-    - name: Connection info
+    - name: Show connection
       run: |
 
         IP=$(sudo tailscale ip -4)
 
-        echo "========================"
+        echo "=============================="
         echo "Windows VM Started"
         echo ""
         echo "SPICE:"
         echo "spice://$IP:5900"
-        echo "========================"
+        echo "=============================="
 
 
-
-    # --------------------------
-    # Keep alive
-    # --------------------------
     - name: Keep Alive
       run: |
 
         while true
         do
-          echo "[$(date)] Windows alive"
+          echo "[$(date)] Windows VM alive"
           sleep 300
         done
