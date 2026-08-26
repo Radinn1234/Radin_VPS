@@ -1,30 +1,30 @@
-name: Debian Root Terminal
+name: Debian Debug
 
 on:
   workflow_dispatch:
 
 jobs:
-  terminal:
+  debug:
     runs-on: ubuntu-latest
     container:
       image: debian:bullseye
 
-    timeout-minutes: 180
+    timeout-minutes: 30
 
     steps:
-      - name: Show system info
+      - name: System info
         run: |
-          echo "=== System ==="
+          echo "User:"
+          whoami
+          echo
+          echo "OS:"
           cat /etc/os-release
           echo
-          echo "=== User ==="
-          whoami
-          id
-          echo
-          echo "=== Hostname ==="
-          hostname
+          echo "Kernel:"
+          uname -a
 
-      - name: Open Root Terminal
+      - name: Debug terminal
+        if: ${{ failure() }}
         uses: mxschmitt/action-tmate@v3
         with:
           limit-access-to-actor: true
