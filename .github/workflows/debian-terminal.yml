@@ -84,17 +84,39 @@ jobs:
           sudo mkdir -p /run/sshd
 
           sudo sed -i \
-            's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
+            's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' \
             /etc/ssh/sshd_config
 
           sudo sed -i \
             's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' \
             /etc/ssh/sshd_config
 
+          sudo sed -i \
+            's/^#\?PermitRootLogin.*/PermitRootLogin yes/' \
+            /etc/ssh/sshd_config
+
           sudo systemctl enable ssh
           sudo systemctl restart ssh
 
           echo "SSH server started."
+
+      # ==========================================
+      # SET ROOT PASSWORD
+      # ==========================================
+      - name: Set root password
+        env:
+          ROOT_PASSWORD: ${{ secrets.ROOT_PASSWORD }}
+        run: |
+          set -e
+
+          if [ -z "$ROOT_PASSWORD" ]; then
+            echo "ERROR: ROOT_PASSWORD secret is empty."
+            exit 1
+          fi
+
+          echo "root:$ROOT_PASSWORD" | sudo chpasswd
+
+          echo "Root password has been set."
 
       # ==========================================
       # VERIFY SSH
@@ -114,7 +136,13 @@ jobs:
           echo "=== SSH Public Key Installed ==="
           sudo test -s /home/runner/.ssh/authorized_keys
 
-          echo "SSH key is installed."
+          echo ""
+          echo "=== SSH Configuration ==="
+          sudo sshd -T | grep -E \
+            'passwordauthentication|permitrootlogin|pubkeyauthentication'
+
+          echo ""
+          echo "SSH is ready."
 
       # ==========================================
       # DOCKER / DEBIAN 11
@@ -159,7 +187,11 @@ jobs:
           echo "$IP"
 
           echo ""
-          echo "SSH:"
+          echo "SSH with root:"
+          echo "ssh root@$IP"
+
+          echo ""
+          echo "SSH with runner:"
           echo "ssh runner@$IP"
 
           echo ""
