@@ -1,0 +1,54 @@
+name: Ubuntu GNOME + AnyDesk
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install GNOME and Xorg
+        run: |
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ubuntu-desktop-minimal \
+            gnome-session \
+            gnome-shell \
+            xorg \
+            dbus-x11
+
+      - name: Install AnyDesk
+        run: |
+          wget -qO- https://keys.anydesk.com/repos/DEB-GPG-KEY \
+            | sudo gpg --dearmor -o /usr/share/keyrings/anydesk.gpg
+
+          echo "deb [signed-by=/usr/share/keyrings/anydesk.gpg] http://deb.anydesk.com/ all main" \
+            | sudo tee /etc/apt/sources.list.d/anydesk.list
+
+          sudo apt-get update
+          sudo apt-get install -y anydesk
+
+      - name: Start AnyDesk
+        run: |
+          sudo systemctl enable anydesk
+          sudo systemctl start anydesk
+          sleep 5
+
+      - name: Show AnyDesk ID
+        run: |
+          ID=$(anydesk --get-id)
+
+          echo ""
+          echo "=========================================="
+          echo "        ANYDESK CONNECTION INFO"
+          echo "=========================================="
+          echo "AnyDesk ID: $ID"
+          echo "=========================================="
+          echo ""
+
+      - name: Keep runner alive
+        run: |
+          echo "Runner is alive..."
+          sleep 3600
