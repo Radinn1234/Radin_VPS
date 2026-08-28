@@ -6,23 +6,35 @@ on:
 jobs:
   desktop:
     runs-on: ubuntu-latest
+
+    # GitHub-hosted runners محدودیت اجرای Job دارند.
     timeout-minutes: 350
 
     steps:
+
+      # --------------------------------------------------
+      # 1. Update
+      # --------------------------------------------------
       - name: Update system
         run: |
           sudo apt-get update
 
-      - name: Install GNOME and Xorg
+      # --------------------------------------------------
+      # 2. Install GNOME + Xorg + DBus
+      # --------------------------------------------------
+      - name: Install GNOME Desktop
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ubuntu-desktop-minimal \
-            gnome-session \
             gnome-shell \
+            gnome-session \
             xorg \
             dbus-x11 \
-            xvfb
+            x11-xserver-utils
 
+      # --------------------------------------------------
+      # 3. Install AnyDesk
+      # --------------------------------------------------
       - name: Install AnyDesk
         run: |
           wget -qO- https://keys.anydesk.com/repos/DEB-GPG-KEY \
@@ -34,53 +46,243 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y anydesk
 
-      - name: Start AnyDesk service
+          echo "AnyDesk installed:"
+          anydesk --version || true
+
+      # --------------------------------------------------
+      # 4. Create desktop user
+      # --------------------------------------------------
+      - name: Create Desktop User
+        run: |
+          if ! id desktop >/dev/null 2>&1; then
+            sudo useradd -m -s /bin/bash desktop
+          fi
+
+          echo "desktop:desktop" | sudo chpasswd
+
+          sudo usermod -aG sudo desktop
+
+          echo "Desktop user created"
+
+      # --------------------------------------------------
+      # 5. Configure Xorg
+      # --------------------------------------------------
+      - name: Configure Xorg
+        run: |
+          sudo mkdir -p /etc/X11/xorg.conf.d
+
+          sudo tee /etc/X11/xorg.conf.d/10-dummy.conf > /dev/null <<'EOF'
+          Section "Device"
+              Identifier "DummyDevice"
+              Driver "dummy"
+              VideoRam 256000
+          EndSection
+
+          Section "Monitor"
+              Identifier "DummyMonitor"
+              HorizSync 28.0-80.0
+              VertRefresh 48.0-75.0
+          EndSection
+
+          Section "Screen"
+              Identifier "DummyScreen"
+              Device "DummyDevice"
+              Monitor "DummyMonitor"
+              DefaultDepth 24
+
+              SubSection "Display"
+                  Depth 24
+                  Modes "1920x1080"
+              EndSubSection
+          EndSection
+
+          Section "ServerLayout"
+              Identifier "DummyLayout"
+              Screen "DummyScreen"
+          EndSection
+          EOF
+
+      # --------------------------------------------------
+      # 6. Start Xorg
+      # --------------------------------------------------
+      - name: Start Xorg
+        run: |
+          sudo Xorg :0 \
+            -configdir /etc/X11/xorg.conf.d \
+            -nolisten tcp \
+            -noreset \
+            > /tmp/xorg.log 2>&1 &
+
+          echo $! | sudo tee /tmp/xorg.pid
+
+          echo "Waiting for Xorg..."
+
+          for i in {1..20}; do
+            if [ -S /tmp/.X11-unix/X0 ]; then
+              echo "Xorg is ready"
+              break
+            fi
+
+            sleep 1
+          done
+
+          echo ""
+          echo "Xorg socket:"
+          ls -la /tmp/.X11-unix/ || true
+
+          echo ""
+          echo "Xorg log:"
+          tail -50 /tmp/xorg.log || true
+
+      # --------------------------------------------------
+      # 7. Start GNOME
+      # --------------------------------------------------
+      - name: Start GNOME Session
+        run: |
+          export DISPLAY=:0
+          export XDG_SESSION_TYPE=x11
+          export XDG_CURRENT_DESKTOP=GNOME
+          export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+
+          sudo -u desktop \
+            env \
+            DISPLAY=:0 \
+            XDG_SESSION_TYPE=x11 \
+            XDG_CURRENT_DESKTOP=GNOME \
+            DBUS_SESSION_BUS_ADDRESS= \
+            dbus-run-session -- \
+            gnome-session \
+            > /tmp/gnome.log 2>&1 &
+
+          echo $! | sudo tee /tmp/gnome.pid
+
+          echo "Waiting for GNOME..."
+
+          sleep 15
+
+          echo ""
+          echo "GNOME processes:"
+          ps aux | grep -Ei 'gnome-session|gnome-shell' | grep -v grep || true
+
+          echo ""
+          echo "GNOME log:"
+          tail -100 /tmp/gnome.log || true
+
+      # --------------------------------------------------
+      # 8. Start AnyDesk
+      # --------------------------------------------------
+      - name: Start AnyDesk
         run: |
           sudo systemctl enable anydesk
           sudo systemctl restart anydesk
 
           sleep 10
 
-          echo "===== AnyDesk Service ====="
+          echo "AnyDesk service:"
           sudo systemctl status anydesk --no-pager || true
 
-      - name: Get AnyDesk ID
-        run: |
-          echo "Waiting for AnyDesk..."
+          echo ""
+          echo "AnyDesk process:"
+          ps aux | grep -i anydesk | grep -v grep || true
 
-          for i in {1..12}; do
+      # --------------------------------------------------
+      # 9. Get AnyDesk ID
+      # --------------------------------------------------
+      - name: Get AnyDesk ID
+        env:
+          DISPLAY: :0
+          XDG_SESSION_TYPE: x11
+          XDG_CURRENT_DESKTOP: GNOME
+        run: |
+
+          echo "=========================================="
+          echo "Checking graphical environment"
+          echo "=========================================="
+
+          echo "DISPLAY=$DISPLAY"
+          echo "XDG_SESSION_TYPE=$XDG_SESSION_TYPE"
+          echo "XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP"
+
+          echo ""
+          echo "X11:"
+          ls -la /tmp/.X11-unix/ || true
+
+          echo ""
+          echo "GNOME:"
+          ps aux | grep -Ei 'gnome-session|gnome-shell' \
+            | grep -v grep || true
+
+          echo ""
+          echo "AnyDesk:"
+          ps aux | grep -i anydesk \
+            | grep -v grep || true
+
+          echo ""
+          echo "=========================================="
+          echo "Getting AnyDesk ID"
+          echo "=========================================="
+
+          ID=""
+
+          for i in {1..20}; do
+
             echo "Attempt $i..."
 
-            ID=$(anydesk --get-id 2>/dev/null || true)
+            ID=$(sudo -u desktop \
+              env DISPLAY=:0 \
+              XDG_SESSION_TYPE=x11 \
+              XDG_CURRENT_DESKTOP=GNOME \
+              anydesk --get-id 2>/dev/null || true)
 
             if [ -n "$ID" ]; then
+
               echo ""
               echo "=========================================="
-              echo "          ANYDESK CONNECTION"
+              echo "        ANYDESK CONNECTION INFO"
               echo "=========================================="
+              echo ""
               echo "AnyDesk ID: $ID"
-              echo "=========================================="
               echo ""
+              echo "=========================================="
 
               break
             fi
 
             sleep 5
+
           done
 
-          echo ""
-          echo "AnyDesk processes:"
-          ps aux | grep -i anydesk | grep -v grep || true
+          if [ -z "$ID" ]; then
+            echo ""
+            echo "ERROR: Could not get AnyDesk ID."
+            echo ""
 
-          echo ""
-          echo "AnyDesk service:"
-          sudo systemctl status anydesk --no-pager || true
+            echo "AnyDesk service:"
+            sudo systemctl status anydesk --no-pager || true
 
-      - name: Keep runner alive
+            echo ""
+            echo "AnyDesk logs:"
+            sudo journalctl -u anydesk --no-pager -n 100 || true
+
+            echo ""
+            echo "Processes:"
+            ps aux | grep -Ei 'anydesk|gnome|Xorg' \
+              | grep -v grep || true
+
+            exit 1
+          fi
+
+      # --------------------------------------------------
+      # 10. Keep Runner Alive
+      # --------------------------------------------------
+      - name: Keep Runner Alive
         run: |
+          echo ""
           echo "=========================================="
-          echo "       RUNNER IS NOW ALIVE"
+          echo "         RUNNER IS ALIVE"
           echo "=========================================="
+          echo ""
+          echo "GNOME + Xorg + AnyDesk are running."
           echo ""
 
           while true; do
