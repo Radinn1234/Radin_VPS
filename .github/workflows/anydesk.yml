@@ -1,146 +1,163 @@
-name: Ubuntu 24.04 GNOME + AnyDesk
+name: Windows AnyDesk
 
 on:
   workflow_dispatch:
 
 jobs:
-  desktop:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 350
+  anydesk:
+    runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
-
-      - name: Install GNOME Desktop
+      - name: Windows Info
+        shell: powershell
         run: |
-          sudo apt-get update
+          Write-Host "=========================================="
+          Write-Host "Windows Information"
+          Write-Host "=========================================="
 
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            gnome \
-            gnome-session \
-            gnome-shell \
-            gdm3 \
-            xorg \
-            dbus-x11
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, WindowsVersion, OsBuildNumber |
+            Format-List
 
-      - name: Disable Wayland
+      - name: Download AnyDesk
+        shell: powershell
         run: |
-          sudo mkdir -p /etc/gdm3
+          $url = "https://download.anydesk.com/AnyDesk.exe"
+          $out = "$env:TEMP\AnyDesk.exe"
 
-          sudo sed -i \
-            's/^#WaylandEnable=false/WaylandEnable=false/' \
-            /etc/gdm3/custom.conf
+          Write-Host "Downloading AnyDesk..."
 
-          if ! grep -q "^WaylandEnable=false" /etc/gdm3/custom.conf; then
-            echo "WaylandEnable=false" | sudo tee -a /etc/gdm3/custom.conf
-          fi
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $out `
+            -UseBasicParsing
 
-          echo "GDM configuration:"
-          cat /etc/gdm3/custom.conf
+          if (!(Test-Path $out)) {
+            throw "AnyDesk download failed."
+          }
+
+          Write-Host "Download completed."
 
       - name: Install AnyDesk
+        shell: powershell
         run: |
-          wget -qO- https://keys.anydesk.com/repos/DEB-GPG-KEY \
-            | sudo gpg --dearmor \
-            -o /usr/share/keyrings/anydesk.gpg
+          $exe = "$env:TEMP\AnyDesk.exe"
+          $installDir = "C:\Program Files (x86)\AnyDesk"
 
-          echo "deb [signed-by=/usr/share/keyrings/anydesk.gpg] http://deb.anydesk.com/ all main" \
-            | sudo tee /etc/apt/sources.list.d/anydesk.list
+          Write-Host "Installing AnyDesk..."
 
-          sudo apt-get update
-          sudo apt-get install -y anydesk
+          Start-Process `
+            -FilePath $exe `
+            -ArgumentList "--install `"$installDir`" --start-with-win --silent" `
+            -Wait `
+            -NoNewWindow
 
-      - name: Configure Desktop User
-        run: |
-          if ! id desktop >/dev/null 2>&1; then
-            sudo useradd -m -s /bin/bash desktop
-          fi
+          Start-Sleep -Seconds 10
 
-          echo "desktop:desktop" | sudo chpasswd
+          $anydesk = "$installDir\AnyDesk.exe"
 
-          sudo usermod -aG sudo desktop
+          if (!(Test-Path $anydesk)) {
+            throw "AnyDesk installation failed."
+          }
 
-      - name: Configure X11 Session
-        run: |
-          sudo mkdir -p /etc/systemd/system/getty@tty1.service.d
-
-          sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf > /dev/null <<'EOF'
-          [Service]
-          ExecStart=
-          ExecStart=-/sbin/agetty --autologin desktop --noclear %I $TERM
-          EOF
-
-          sudo systemctl daemon-reload
-
-      - name: Start Xorg Session
-        run: |
-          sudo -u desktop bash -c '
-            export DISPLAY=:0
-            export XDG_SESSION_TYPE=x11
-            export XDG_CURRENT_DESKTOP=GNOME
-            export XDG_RUNTIME_DIR=/tmp/runtime-desktop
-
-            mkdir -p "$XDG_RUNTIME_DIR"
-            chmod 700 "$XDG_RUNTIME_DIR"
-
-            dbus-run-session -- gnome-session
-          ' > /tmp/gnome.log 2>&1 &
-
-          sleep 20
-
-          echo "GNOME:"
-          ps aux | grep -Ei \
-            "gnome-session|gnome-shell|mutter" \
-            | grep -v grep || true
+          Write-Host "AnyDesk installed."
+          Write-Host "Path: $anydesk"
 
       - name: Start AnyDesk
+        shell: powershell
         run: |
-          sudo systemctl enable anydesk
-          sudo systemctl restart anydesk
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
 
-          sleep 10
+          Write-Host "Starting AnyDesk..."
 
-          sudo systemctl status anydesk --no-pager || true
+          & $anydesk --start
 
-          echo ""
-          echo "AnyDesk:"
-          ps aux | grep '[a]nydesk' || true
+          Start-Sleep -Seconds 10
+
+          Write-Host "AnyDesk processes:"
+          Get-Process AnyDesk -ErrorAction SilentlyContinue |
+            Format-Table Id, ProcessName, Path
+
+      - name: Configure Unattended Access
+        shell: powershell
+        env:
+          ANYDESK_PASSWORD: ${{ secrets.ANYDESK_PASSWORD }}
+        run: |
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+
+          if ([string]::IsNullOrWhiteSpace($env:ANYDESK_PASSWORD)) {
+            throw "ANYDESK_PASSWORD secret is missing."
+          }
+
+          Write-Host "Configuring unattended access..."
+
+          $env:ANYDESK_PASSWORD | & $anydesk --set-password
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to configure AnyDesk password."
+          }
+
+          Write-Host "Unattended Access configured."
 
       - name: Get AnyDesk ID
+        shell: powershell
         run: |
-          ID=""
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
 
-          for i in {1..20}; do
-            echo "Attempt $i..."
+          Write-Host "=========================================="
+          Write-Host "Getting AnyDesk ID"
+          Write-Host "=========================================="
 
-            ID=$(sudo anydesk --get-id 2>/dev/null || true)
+          $id = ""
 
-            if [ -n "$ID" ]; then
+          for ($i = 1; $i -le 20; $i++) {
+            Write-Host "Attempt $i..."
+
+            $id = & $anydesk --get-id 2>$null |
+              Out-String
+
+            $id = $id.Trim()
+
+            if (![string]::IsNullOrWhiteSpace($id)) {
               break
-            fi
+            }
 
-            sleep 3
-          done
+            Start-Sleep -Seconds 3
+          }
 
-          if [ -z "$ID" ]; then
-            echo "Could not get AnyDesk ID."
-            exit 1
-          fi
+          if ([string]::IsNullOrWhiteSpace($id)) {
+            Write-Host "ERROR: Could not get AnyDesk ID."
 
-          echo ""
-          echo "=========================================="
-          echo "          ANYDESK CONNECTION"
-          echo "=========================================="
-          echo ""
-          echo "AnyDesk ID: $ID"
-          echo ""
-          echo "=========================================="
+            Write-Host "AnyDesk processes:"
+            Get-Process AnyDesk -ErrorAction SilentlyContinue |
+              Format-Table Id, ProcessName, Path
 
-      - name: Keep Desktop Alive
+            throw "AnyDesk ID was not available."
+          }
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "ANYDESK ID: $id"
+          Write-Host "=========================================="
+
+      - name: Check AnyDesk Service
+        shell: powershell
         run: |
-          echo "Ubuntu 24.04 GNOME is running."
-          echo "AnyDesk is running."
+          Write-Host "AnyDesk services:"
+          Get-Service |
+            Where-Object {
+              $_.Name -like "*AnyDesk*" -or
+              $_.DisplayName -like "*AnyDesk*"
+            } |
+            Format-Table Status, Name, DisplayName
 
-          while true; do
-            echo "Desktop alive: $(date)"
-            sleep 60
-          done
+      - name: Keep Runner Alive
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "AnyDesk is running."
+          Write-Host "Keeping the runner alive for 5 minutes."
+          Write-Host "=========================================="
+
+          Start-Sleep -Seconds 300
