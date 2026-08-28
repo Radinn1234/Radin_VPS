@@ -26,14 +26,13 @@ jobs:
           wget \
           cpu-checker
 
-        kvm-ok || true
-
+        echo "===== KVM CHECK ====="
+        kvm-ok
 
     - name: Install Tailscale
       run: |
         curl -fsSL https://tailscale.com/install.sh | sh
         sudo systemctl enable --now tailscaled
-
 
     - name: Connect Tailscale
       env:
@@ -43,8 +42,8 @@ jobs:
           --auth-key="$TS_AUTHKEY" \
           --hostname="win11-${GITHUB_RUN_ID}"
 
+        echo "Tailscale IP:"
         sudo tailscale ip -4
-
 
     - name: Download Windows ISO
       run: |
@@ -53,14 +52,12 @@ jobs:
 
         ls -lh Windows11.iso
 
-
     - name: Create Windows disk
       run: |
         qemu-img create \
           -f qcow2 \
           win11.qcow2 \
           80G
-
 
     - name: Create TPM
       run: |
@@ -72,6 +69,70 @@ jobs:
           --ctrl type=unixio,path=/tmp/win11-tpm/swtpm.sock \
           --daemon
 
+    - name: Create unattended configuration
+      run: |
+        mkdir -p /tmp/win11-autounattend
+
+        cat > /tmp/win11-autounattend/autounattend.xml <<'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+          <settings pass="windowsPE">
+
+            <component
+              name="Microsoft-Windows-Setup"
+              processorArchitecture="amd64"
+              publicKeyToken="31bf3856ad364e35"
+              language="neutral"
+              versionScope="nonSxS">
+
+              <RunSynchronous>
+
+                <RunSynchronousCommand wcm:action="add">
+                  <Order>1</Order>
+                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+
+                <RunSynchronousCommand wcm:action="add">
+                  <Order>2</Order>
+                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+
+                <RunSynchronousCommand wcm:action="add">
+                  <Order>3</Order>
+                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+
+                <RunSynchronousCommand wcm:action="add">
+                  <Order>4</Order>
+                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+
+                <RunSynchronousCommand wcm:action="add">
+                  <Order>5</Order>
+                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassStorageCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+
+              </RunSynchronous>
+
+            </component>
+
+          </settings>
+
+        </unattend>
+        EOF
+
+        cat /tmp/win11-autounattend/autounattend.xml
+
+        genisoimage \
+          -quiet \
+          -J \
+          -R \
+          -V AUTOUNATTEND \
+          -o autounattend.iso \
+          /tmp/win11-autounattend
+
+        ls -lh autounattend.iso
 
     - name: Start Windows VM
       run: |
@@ -86,6 +147,7 @@ jobs:
           -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
           -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
           -drive file=win11.qcow2,format=qcow2 \
+          -drive file=autounattend.iso,media=cdrom,readonly=on \
           -cdrom Windows11.iso \
           -boot d \
           -chardev socket,id=chrtpm,path=/tmp/win11-tpm/swtpm.sock \
@@ -94,25 +156,38 @@ jobs:
           -spice addr=0.0.0.0,port=5900,disable-ticketing=on \
           -vga qxl"
 
-
     - name: Show connection
       run: |
 
         IP=$(sudo tailscale ip -4)
 
-        echo "=============================="
-        echo "Windows VM Started"
+        echo ""
+        echo "======================================"
+        echo "Windows 11 VM Started"
+        echo "======================================"
+        echo ""
+        echo "Tailscale IP:"
+        echo "$IP"
         echo ""
         echo "SPICE:"
         echo "spice://$IP:5900"
-        echo "=============================="
+        echo ""
+        echo "======================================"
 
-
-    - name: Keep Alive
+    - name: Monitor VM
       run: |
-
         while true
         do
-          echo "[$(date)] Windows VM alive"
-          sleep 300
+          echo ""
+          echo "[$(date)] Windows VM status"
+
+          if pgrep -f "qemu-system-x86_64" >/dev/null
+          then
+            echo "VM: RUNNING"
+          else
+            echo "VM: STOPPED"
+            exit 1
+          fi
+
+          sleep 60
         done
