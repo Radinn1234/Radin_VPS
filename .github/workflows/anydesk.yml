@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Windows Info
+      - name: Windows Information
         shell: powershell
         run: |
           Write-Host "=========================================="
@@ -61,8 +61,25 @@ jobs:
             throw "AnyDesk installation failed."
           }
 
-          Write-Host "AnyDesk installed."
+          Write-Host "AnyDesk installed successfully."
           Write-Host "Path: $anydesk"
+
+      - name: Inspect AnyDesk
+        shell: powershell
+        run: |
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+
+          Write-Host "=========================================="
+          Write-Host "AnyDesk Version"
+          Write-Host "=========================================="
+
+          & $anydesk --version
+
+          Write-Host ""
+          Write-Host "AnyDesk processes:"
+
+          Get-Process AnyDesk -ErrorAction SilentlyContinue |
+            Format-Table Id, ProcessName, Path
 
       - name: Start AnyDesk
         shell: powershell
@@ -76,6 +93,7 @@ jobs:
           Start-Sleep -Seconds 10
 
           Write-Host "AnyDesk processes:"
+
           Get-Process AnyDesk -ErrorAction SilentlyContinue |
             Format-Table Id, ProcessName, Path
 
@@ -90,15 +108,65 @@ jobs:
             throw "ANYDESK_PASSWORD secret is missing."
           }
 
-          Write-Host "Configuring unattended access..."
+          Write-Host "=========================================="
+          Write-Host "Configuring Unattended Access"
+          Write-Host "=========================================="
 
-          $env:ANYDESK_PASSWORD | & $anydesk --set-password
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $anydesk
+          $psi.Arguments = "--set-password _unattended_access"
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.CreateNoWindow = $true
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to configure AnyDesk password."
+          $process = New-Object System.Diagnostics.Process
+          $process.StartInfo = $psi
+
+          [void]$process.Start()
+
+          $process.StandardInput.WriteLine($env:ANYDESK_PASSWORD)
+          $process.StandardInput.Close()
+
+          $stdout = $process.StandardOutput.ReadToEnd()
+          $stderr = $process.StandardError.ReadToEnd()
+
+          $process.WaitForExit()
+
+          Write-Host "AnyDesk exit code: $($process.ExitCode)"
+
+          if (![string]::IsNullOrWhiteSpace($stdout)) {
+            Write-Host "AnyDesk output:"
+            Write-Host $stdout
           }
 
-          Write-Host "Unattended Access configured."
+          if (![string]::IsNullOrWhiteSpace($stderr)) {
+            Write-Host "AnyDesk error output:"
+            Write-Host $stderr
+          }
+
+          if ($process.ExitCode -ne 0) {
+            throw "Failed to configure AnyDesk Unattended Access."
+          }
+
+          Write-Host "Unattended Access configured successfully."
+
+      - name: Restart AnyDesk
+        shell: powershell
+        run: |
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+
+          Write-Host "Restarting AnyDesk service..."
+
+          & $anydesk --restart-service
+
+          Start-Sleep -Seconds 10
+
+          Write-Host "AnyDesk processes:"
+
+          Get-Process AnyDesk -ErrorAction SilentlyContinue |
+            Format-Table Id, ProcessName, Path
 
       - name: Get AnyDesk ID
         shell: powershell
@@ -127,9 +195,12 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($id)) {
+            Write-Host ""
             Write-Host "ERROR: Could not get AnyDesk ID."
 
+            Write-Host ""
             Write-Host "AnyDesk processes:"
+
             Get-Process AnyDesk -ErrorAction SilentlyContinue |
               Format-Table Id, ProcessName, Path
 
@@ -144,7 +215,10 @@ jobs:
       - name: Check AnyDesk Service
         shell: powershell
         run: |
-          Write-Host "AnyDesk services:"
+          Write-Host "=========================================="
+          Write-Host "AnyDesk Services"
+          Write-Host "=========================================="
+
           Get-Service |
             Where-Object {
               $_.Name -like "*AnyDesk*" -or
@@ -157,7 +231,7 @@ jobs:
         run: |
           Write-Host "=========================================="
           Write-Host "AnyDesk is running."
-          Write-Host "Keeping the runner alive for 5 minutes."
+          Write-Host "Runner will remain alive for 5 minutes."
           Write-Host "=========================================="
 
           Start-Sleep -Seconds 300
