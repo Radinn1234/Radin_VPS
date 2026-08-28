@@ -1,4 +1,4 @@
-name: AnyDesk Windows Runner
+name: Windows AnyDesk
 
 on:
   workflow_dispatch:
@@ -6,37 +6,77 @@ on:
 jobs:
   anydesk:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
 
-      - name: Check Windows User
+      - name: Configure runneradmin password
+        shell: powershell
+        env:
+          WINDOWS_PASSWORD: ${{ secrets.WINDOWS_PASSWORD }}
+        run: |
+          Write-Host "=========================================="
+          Write-Host "CONFIGURING RUNNERADMIN"
+          Write-Host "=========================================="
+
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_PASSWORD)) {
+            throw "WINDOWS_PASSWORD secret is missing."
+          }
+
+          $securePassword = ConvertTo-SecureString `
+            $env:WINDOWS_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $user = Get-LocalUser -Name "runneradmin" -ErrorAction Stop
+
+          $user | Set-LocalUser -Password $securePassword
+
+          Write-Host "runneradmin password changed successfully."
+
+          Write-Host ""
+          Write-Host "Account information:"
+
+          Get-LocalUser -Name "runneradmin" |
+            Select-Object Name, Enabled, LastLogon, PasswordRequired |
+            Format-List
+
+      - name: Install AnyDesk
         shell: powershell
         run: |
           Write-Host "=========================================="
-          Write-Host "WINDOWS USER"
+          Write-Host "INSTALLING ANYDESK"
           Write-Host "=========================================="
 
-          whoami
+          $download = "$env:TEMP\AnyDesk.exe"
 
-          Write-Host ""
-          Write-Host "User SID:"
-          whoami /user
+          Invoke-WebRequest `
+            -Uri "https://download.anydesk.com/AnyDesk.exe" `
+            -OutFile $download `
+            -UseBasicParsing
 
-          Write-Host ""
-          Write-Host "Current user:"
-          $env:USERNAME
+          if (!(Test-Path $download)) {
+            throw "AnyDesk download failed."
+          }
 
-          Write-Host ""
-          Write-Host "Computer:"
-          $env:COMPUTERNAME
+          Write-Host "Downloaded AnyDesk."
 
-      - name: Check AnyDesk Installation
-        shell: powershell
-        run: |
+          $installDir = "C:\Program Files (x86)\AnyDesk"
+
+          Start-Process `
+            -FilePath $download `
+            -ArgumentList "--install `"$installDir`" --start-with-win --silent" `
+            -Wait `
+            -NoNewWindow
+
+          Start-Sleep -Seconds 10
+
+          Write-Host "Searching for AnyDesk.exe..."
+
           $paths = @(
             "C:\Program Files (x86)\AnyDesk\AnyDesk.exe",
-            "C:\Program Files\AnyDesk\AnyDesk.exe"
+            "C:\Program Files\AnyDesk\AnyDesk.exe",
+            "C:\AnyDesk\AnyDesk.exe"
           )
 
           $anydesk = $null
@@ -49,21 +89,39 @@ jobs:
           }
 
           if ($null -eq $anydesk) {
-            throw "AnyDesk.exe was not found."
+            Write-Host ""
+            Write-Host "AnyDesk.exe not found in standard locations."
+
+            Write-Host ""
+            Write-Host "Searching entire Program Files..."
+
+            $found = Get-ChildItem `
+              -Path "C:\Program Files","C:\Program Files (x86)" `
+              -Filter "AnyDesk.exe" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if ($null -ne $found) {
+              $anydesk = $found.FullName
+            }
           }
 
-          Write-Host "AnyDesk:"
-          Write-Host $anydesk
+          if ($null -eq $anydesk) {
+            throw "AnyDesk.exe was not found after installation."
+          }
 
           Write-Host ""
-          Write-Host "Version:"
-          & $anydesk --version
+          Write-Host "AnyDesk found:"
+          Write-Host $anydesk
 
-      - name: Check AnyDesk Service
+          echo "ANYDESK_PATH=$anydesk" >> $env:GITHUB_ENV
+
+      - name: Start AnyDesk service
         shell: powershell
         run: |
           Write-Host "=========================================="
-          Write-Host "ANYDESK SERVICE"
+          Write-Host "STARTING ANYDESK"
           Write-Host "=========================================="
 
           Get-Service |
@@ -73,6 +131,23 @@ jobs:
             } |
             Format-Table Status, Name, DisplayName
 
+          $services = Get-Service |
+            Where-Object {
+              $_.Name -like "*AnyDesk*" -or
+              $_.DisplayName -like "*AnyDesk*"
+            }
+
+          foreach ($service in $services) {
+
+            Write-Host "Starting service: $($service.Name)"
+
+            if ($service.Status -ne "Running") {
+              Start-Service $service.Name
+            }
+          }
+
+          Start-Sleep -Seconds 10
+
           Write-Host ""
           Write-Host "AnyDesk processes:"
 
@@ -80,44 +155,79 @@ jobs:
             Select-Object Id, ProcessName, Path |
             Format-Table -AutoSize
 
+      - name: Configure AnyDesk unattended access
+        shell: powershell
+        env:
+          ANYDESK_PASSWORD: ${{ secrets.ANYDESK_PASSWORD }}
+        run: |
+          Write-Host "=========================================="
+          Write-Host "CONFIGURING ANYDESK PASSWORD"
+          Write-Host "=========================================="
+
+          if ([string]::IsNullOrWhiteSpace($env:ANYDESK_PASSWORD)) {
+            throw "ANYDESK_PASSWORD secret is missing."
+          }
+
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+
+          $psi.FileName = $env:ANYDESK_PATH
+          $psi.Arguments = "--set-password _unattended_access"
+
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.CreateNoWindow = $true
+
+          $process = New-Object System.Diagnostics.Process
+          $process.StartInfo = $psi
+
+          [void]$process.Start()
+
+          $process.StandardInput.WriteLine($env:ANYDESK_PASSWORD)
+          $process.StandardInput.Close()
+
+          $stdout = $process.StandardOutput.ReadToEnd()
+          $stderr = $process.StandardError.ReadToEnd()
+
+          $process.WaitForExit()
+
+          Write-Host "Exit code: $($process.ExitCode)"
+
+          if ($stdout) {
+            Write-Host $stdout
+          }
+
+          if ($stderr) {
+            Write-Host $stderr
+          }
+
+          if ($process.ExitCode -ne 0) {
+            throw "AnyDesk unattended access configuration failed."
+          }
+
+          Write-Host "AnyDesk password configured."
+
       - name: Get AnyDesk ID
         shell: powershell
         run: |
-          $paths = @(
-            "C:\Program Files (x86)\AnyDesk\AnyDesk.exe",
-            "C:\Program Files\AnyDesk\AnyDesk.exe"
-          )
-
-          $anydesk = $null
-
-          foreach ($path in $paths) {
-            if (Test-Path $path) {
-              $anydesk = $path
-              break
-            }
-          }
-
-          if ($null -eq $anydesk) {
-            throw "AnyDesk.exe was not found."
-          }
-
           Write-Host "=========================================="
-          Write-Host "ANYDESK ID"
+          Write-Host "GETTING ANYDESK ID"
           Write-Host "=========================================="
 
           $id = ""
 
-          for ($i = 1; $i -le 10; $i++) {
+          for ($i = 1; $i -le 20; $i++) {
 
             Write-Host "Attempt $i..."
 
-            $id = (& $anydesk --get-id 2>$null | Out-String).Trim()
+            $id = (& $env:ANYDESK_PATH --get-id 2>$null | Out-String).Trim()
 
             if (![string]::IsNullOrWhiteSpace($id)) {
               break
             }
 
-            Start-Sleep -Seconds 2
+            Start-Sleep -Seconds 3
           }
 
           if ([string]::IsNullOrWhiteSpace($id)) {
@@ -125,76 +235,37 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "AnyDesk ID:"
+          Write-Host "=========================================="
+          Write-Host "ANYDESK ID:"
           Write-Host $id
+          Write-Host "=========================================="
 
-      - name: Check Windows Interactive Sessions
+      - name: Verify Windows account
         shell: powershell
         run: |
           Write-Host "=========================================="
-          Write-Host "WINDOWS SESSIONS"
+          Write-Host "RUNNERADMIN"
           Write-Host "=========================================="
 
+          whoami
+
           Write-Host ""
-          Write-Host "QUSER:"
+          Write-Host "Sessions:"
+
           quser 2>&1
 
           Write-Host ""
-          Write-Host "SESSION:"
-          query session 2>&1
+          Write-Host "Account:"
 
-          Write-Host ""
-          Write-Host "Current logged-on users:"
-          Get-CimInstance Win32_LoggedOnUser |
-            Select-Object -First 20 |
-            Format-Table -AutoSize
+          Get-LocalUser -Name "runneradmin" |
+            Select-Object Name, Enabled, LastLogon, PasswordRequired |
+            Format-List
 
-      - name: Check Runner Account
+      - name: Keep runner alive
         shell: powershell
         run: |
           Write-Host "=========================================="
-          Write-Host "RUNNER ACCOUNT"
+          Write-Host "ANYDESK READY"
           Write-Host "=========================================="
 
-          $user = Get-LocalUser -Name "runner" -ErrorAction SilentlyContinue
-
-          if ($null -eq $user) {
-            Write-Host "Local user 'runner' does not exist."
-          }
-          else {
-            $user |
-              Select-Object Name, Enabled, LastLogon, PasswordRequired |
-              Format-List
-          }
-
-          Write-Host ""
-          Write-Host "Administrators:"
-          Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue |
-            Format-Table Name, PrincipalSource, ObjectClass
-
-      - name: Verify AnyDesk Password Secret
-        shell: powershell
-        env:
-          ANYDESK_PASSWORD: ${{ secrets.ANYDESK_PASSWORD }}
-        run: |
-          Write-Host "=========================================="
-          Write-Host "ANYDESK PASSWORD SECRET"
-          Write-Host "=========================================="
-
-          if ([string]::IsNullOrWhiteSpace($env:ANYDESK_PASSWORD)) {
-            throw "ANYDESK_PASSWORD secret is missing."
-          }
-
-          Write-Host "ANYDESK_PASSWORD secret exists."
-          Write-Host "Password itself will NOT be displayed."
-
-      - name: Keep Runner Alive
-        shell: powershell
-        run: |
-          Write-Host "=========================================="
-          Write-Host "RUNNER READY"
-          Write-Host "=========================================="
-          Write-Host "AnyDesk is running."
-          Write-Host "Waiting for remote connection..."
-
-          Start-Sleep -Seconds 300
+          Start-Sleep -Seconds 600
