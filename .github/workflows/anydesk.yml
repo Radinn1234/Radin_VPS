@@ -1,19 +1,16 @@
-name: Ubuntu GNOME + AnyDesk
+name: Ubuntu 24.04 GNOME + AnyDesk
 
 on:
   workflow_dispatch:
 
 jobs:
   desktop:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
 
     steps:
 
-      # ==========================================
-      # Install GNOME + Xorg
-      # ==========================================
-      - name: Install GNOME and Xorg
+      - name: Install GNOME Desktop
         run: |
           sudo apt-get update
 
@@ -21,14 +18,25 @@ jobs:
             gnome \
             gnome-session \
             gnome-shell \
+            gdm3 \
             xorg \
-            dbus-x11 \
-            x11-xserver-utils \
-            x11-utils
+            dbus-x11
 
-      # ==========================================
-      # Install AnyDesk
-      # ==========================================
+      - name: Disable Wayland
+        run: |
+          sudo mkdir -p /etc/gdm3
+
+          sudo sed -i \
+            's/^#WaylandEnable=false/WaylandEnable=false/' \
+            /etc/gdm3/custom.conf
+
+          if ! grep -q "^WaylandEnable=false" /etc/gdm3/custom.conf; then
+            echo "WaylandEnable=false" | sudo tee -a /etc/gdm3/custom.conf
+          fi
+
+          echo "GDM configuration:"
+          cat /etc/gdm3/custom.conf
+
       - name: Install AnyDesk
         run: |
           wget -qO- https://keys.anydesk.com/repos/DEB-GPG-KEY \
@@ -41,10 +49,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y anydesk
 
-      # ==========================================
-      # Create desktop user
-      # ==========================================
-      - name: Create desktop user
+      - name: Configure Desktop User
         run: |
           if ! id desktop >/dev/null 2>&1; then
             sudo useradd -m -s /bin/bash desktop
@@ -54,116 +59,39 @@ jobs:
 
           sudo usermod -aG sudo desktop
 
-          sudo mkdir -p /run/user/$(id -u desktop)
-          sudo chown desktop:desktop /run/user/$(id -u desktop)
-          sudo chmod 700 /run/user/$(id -u desktop)
-
-      # ==========================================
-      # Start Xorg
-      # ==========================================
-      - name: Start Xorg
+      - name: Configure X11 Session
         run: |
-          sudo Xorg :0 \
-            -noreset \
-            -nolisten tcp \
-            -logfile /tmp/Xorg.0.log \
-            > /tmp/xorg.stdout.log 2>&1 &
+          sudo mkdir -p /etc/systemd/system/getty@tty1.service.d
 
-          echo $! > /tmp/xorg.pid
+          sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf > /dev/null <<'EOF'
+          [Service]
+          ExecStart=
+          ExecStart=-/sbin/agetty --autologin desktop --noclear %I $TERM
+          EOF
 
-          echo "Waiting for Xorg..."
+          sudo systemctl daemon-reload
 
-          for i in {1..20}; do
-            if [ -S /tmp/.X11-unix/X0 ]; then
-              echo "Xorg is ready."
-              break
-            fi
-
-            sleep 1
-          done
-
-          echo ""
-          echo "X11 socket:"
-          ls -la /tmp/.X11-unix/ || true
-
-          echo ""
-          echo "Xorg process:"
-          ps aux | grep '[X]org' || true
-
-          echo ""
-          echo "Xorg log:"
-          tail -100 /tmp/Xorg.0.log || true
-
-      # ==========================================
-      # Allow desktop user to access X
-      # ==========================================
-      - name: Configure X11 access
+      - name: Start Xorg Session
         run: |
-          sudo touch /tmp/.Xauthority
-          sudo chown desktop:desktop /tmp/.Xauthority
+          sudo -u desktop bash -c '
+            export DISPLAY=:0
+            export XDG_SESSION_TYPE=x11
+            export XDG_CURRENT_DESKTOP=GNOME
+            export XDG_RUNTIME_DIR=/tmp/runtime-desktop
 
-          sudo -u desktop env \
-            DISPLAY=:0 \
-            XAUTHORITY=/tmp/.Xauthority \
-            xhost +SI:localuser:desktop || true
+            mkdir -p "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
 
-      # ==========================================
-      # Start GNOME on X11
-      # ==========================================
-      - name: Start GNOME
-        run: |
-          export DISPLAY=:0
-          export XDG_SESSION_TYPE=x11
-          export XDG_CURRENT_DESKTOP=GNOME
-          export XDG_RUNTIME_DIR=/run/user/$(id -u desktop)
-
-          echo "Starting GNOME on DISPLAY=$DISPLAY"
-
-          sudo -u desktop \
-            env \
-            DISPLAY=:0 \
-            XDG_SESSION_TYPE=x11 \
-            XDG_CURRENT_DESKTOP=GNOME \
-            XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-            dbus-run-session -- \
-            gnome-session \
-            > /tmp/gnome.log 2>&1 &
-
-          echo $! > /tmp/gnome.pid
+            dbus-run-session -- gnome-session
+          ' > /tmp/gnome.log 2>&1 &
 
           sleep 20
 
-          echo ""
-          echo "GNOME processes:"
+          echo "GNOME:"
           ps aux | grep -Ei \
-            'gnome-session|gnome-shell|mutter' \
+            "gnome-session|gnome-shell|mutter" \
             | grep -v grep || true
 
-          echo ""
-          echo "GNOME log:"
-          tail -100 /tmp/gnome.log || true
-
-      # ==========================================
-      # Test X11
-      # ==========================================
-      - name: Test graphical display
-        run: |
-          export DISPLAY=:0
-
-          echo "DISPLAY=$DISPLAY"
-
-          echo ""
-          echo "Display information:"
-          xdpyinfo -display :0 | grep -E \
-            'dimensions|depth|vendor name' || true
-
-          echo ""
-          echo "Root window:"
-          xwininfo -root -display :0 || true
-
-      # ==========================================
-      # Start AnyDesk
-      # ==========================================
       - name: Start AnyDesk
         run: |
           sudo systemctl enable anydesk
@@ -171,22 +99,14 @@ jobs:
 
           sleep 10
 
-          echo "AnyDesk service:"
           sudo systemctl status anydesk --no-pager || true
 
           echo ""
-          echo "AnyDesk processes:"
+          echo "AnyDesk:"
           ps aux | grep '[a]nydesk' || true
 
-      # ==========================================
-      # Get AnyDesk ID
-      # ==========================================
       - name: Get AnyDesk ID
         run: |
-          echo "=========================================="
-          echo "Getting AnyDesk ID"
-          echo "=========================================="
-
           ID=""
 
           for i in {1..20}; do
@@ -201,41 +121,26 @@ jobs:
             sleep 3
           done
 
-          if [ -n "$ID" ]; then
-            echo ""
-            echo "=========================================="
-            echo "       ANYDESK CONNECTION INFO"
-            echo "=========================================="
-            echo ""
-            echo "AnyDesk ID: $ID"
-            echo ""
-            echo "=========================================="
-          else
-            echo ""
-            echo "AnyDesk ID was not returned."
-            echo ""
-
-            sudo systemctl status anydesk --no-pager || true
-
+          if [ -z "$ID" ]; then
+            echo "Could not get AnyDesk ID."
             exit 1
           fi
 
-      # ==========================================
-      # Keep Runner alive
-      # ==========================================
-      - name: Keep runner alive
+          echo ""
+          echo "=========================================="
+          echo "          ANYDESK CONNECTION"
+          echo "=========================================="
+          echo ""
+          echo "AnyDesk ID: $ID"
+          echo ""
+          echo "=========================================="
+
+      - name: Keep Desktop Alive
         run: |
-          echo ""
-          echo "=========================================="
-          echo "       REMOTE DESKTOP IS RUNNING"
-          echo "=========================================="
-          echo ""
-          echo "Desktop : GNOME"
-          echo "Display : X11 :0"
-          echo "Remote  : AnyDesk"
-          echo ""
+          echo "Ubuntu 24.04 GNOME is running."
+          echo "AnyDesk is running."
 
           while true; do
-            echo "Runner alive: $(date)"
+            echo "Desktop alive: $(date)"
             sleep 60
           done
