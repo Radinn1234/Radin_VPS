@@ -10,9 +10,6 @@ jobs:
 
     steps:
 
-      # ==========================================
-      # SYSTEM INFO
-      # ==========================================
       - name: Show Ubuntu Information
         run: |
           set -e
@@ -32,14 +29,9 @@ jobs:
           echo "=== RAM ==="
           free -h
 
-      # ==========================================
-      # TAILSCALE
-      # ==========================================
       - name: Install Tailscale
         run: |
           set -e
-
-          echo "=== Installing Tailscale ==="
 
           curl -fsSL https://tailscale.com/install.sh | sh
 
@@ -47,16 +39,11 @@ jobs:
 
           echo "Tailscale installed."
 
-      # ==========================================
-      # CONNECT RUNNER TO TAILSCALE
-      # ==========================================
       - name: Connect Runner to Tailscale
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           set -e
-
-          echo "=== Connecting Runner to Tailscale ==="
 
           if [ -z "$TS_AUTHKEY" ]; then
             echo "ERROR: TS_AUTHKEY secret is empty."
@@ -67,27 +54,14 @@ jobs:
             --auth-key="$TS_AUTHKEY" \
             --hostname="github-runner-${GITHUB_RUN_ID}"
 
-          echo ""
-          echo "=== Tailscale Status ==="
-          sudo tailscale status
-
-          echo ""
-          echo "=== Tailscale IPv4 ==="
+          echo "Tailscale IP:"
           sudo tailscale ip -4
 
-      # ==========================================
-      # KDE PLASMA + XRDP
-      # ==========================================
-      - name: Install KDE Plasma + RDP
+      - name: Install KDE Plasma and RDP
         run: |
           set -e
 
-          echo "=== Updating Ubuntu ==="
-
           sudo apt-get update
-
-          echo ""
-          echo "=== Installing KDE Plasma ==="
 
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             kde-plasma-desktop \
@@ -95,17 +69,9 @@ jobs:
             dbus-x11 \
             xorgxrdp
 
-          echo ""
-          echo "=== KDE + XRDP installed ==="
-
-      # ==========================================
-      # CONFIGURE KDE FOR XRDP
-      # ==========================================
-      - name: Configure KDE Plasma for XRDP
+      - name: Configure KDE for XRDP
         run: |
           set -e
-
-          echo "=== Configuring XRDP session ==="
 
           sudo cp /etc/xrdp/startwm.sh /etc/xrdp/startwm.sh.backup
 
@@ -128,59 +94,38 @@ jobs:
 
           sudo chmod +x /etc/xrdp/startwm.sh
 
-          echo "XRDP KDE session configured."
-
-      # ==========================================
-      # ENABLE XRDP
-      # ==========================================
       - name: Enable RDP
         run: |
           set -e
-
-          echo "=== Enabling XRDP ==="
 
           sudo adduser xrdp ssl-cert || true
 
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
-          echo ""
           echo "=== XRDP Status ==="
-
           sudo systemctl status xrdp --no-pager || true
 
-          echo ""
-          echo "=== RDP Listening Port ==="
-
+          echo "=== RDP Port ==="
           sudo ss -tlnp | grep ':3389' || true
 
-      # ==========================================
-      # SSH SERVER
-      # ==========================================
       - name: Configure SSH
         env:
           SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
         run: |
           set -e
 
-          echo "=== Installing OpenSSH Server ==="
-
           sudo apt-get update
           sudo apt-get install -y openssh-server
 
-          echo "=== Preparing SSH ==="
-
           sudo mkdir -p /home/runner/.ssh
 
-          echo "$SSH_PUBLIC_KEY" | sudo tee \
-            /home/runner/.ssh/authorized_keys > /dev/null
+          echo "$SSH_PUBLIC_KEY" | sudo tee /home/runner/.ssh/authorized_keys > /dev/null
 
           sudo chmod 700 /home/runner/.ssh
           sudo chmod 600 /home/runner/.ssh/authorized_keys
 
           sudo chown -R runner:runner /home/runner/.ssh
-
-          echo "=== Configuring SSH ==="
 
           sudo mkdir -p /run/sshd
 
@@ -192,106 +137,9 @@ jobs:
             's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' \
             /etc/ssh/sshd_config
 
-          sudo sed -i \
-            's/^#\?PermitRootLogin.*/PermitRootLogin yes/' \
-            /etc/ssh/sshd_config
-
           sudo systemctl enable ssh
           sudo systemctl restart ssh
 
-          echo "SSH server started."
-
-      # ==========================================
-      # SET ROOT PASSWORD
-      # ==========================================
-      - name: Set root password
-        env:
-          ROOT_PASSWORD: ${{ secrets.ROOT_PASSWORD }}
-        run: |
-          set -e
-
-          if [ -z "$ROOT_PASSWORD" ]; then
-            echo "ERROR: ROOT_PASSWORD secret is empty."
-            exit 1
-          fi
-
-          echo "root:$ROOT_PASSWORD" | sudo chpasswd
-
-          echo "Root password has been set."
-
-      # ==========================================
-      # VERIFY SSH
-      # ==========================================
-      - name: Verify SSH
-        run: |
-          set -e
-
-          echo "=== SSH Status ==="
-          sudo systemctl status ssh --no-pager || true
-
-          echo ""
-          echo "=== SSH Listening ==="
-          sudo ss -tlnp | grep ':22' || true
-
-          echo ""
-          echo "=== SSH Public Key ==="
-          sudo test -s /home/runner/.ssh/authorized_keys
-
-      # ==========================================
-      # VERIFY KDE
-      # ==========================================
-      - name: Verify KDE Plasma
-        run: |
-          set -e
-
-          echo "=== KDE Plasma ==="
-
-          if command -v plasmashell >/dev/null 2>&1; then
-            plasmashell --version || true
-          else
-            echo "plasmashell not found"
-          fi
-
-          echo ""
-          echo "=== XRDP ==="
-
-          sudo systemctl is-enabled xrdp || true
-          sudo systemctl is-active xrdp || true
-
-          echo ""
-          echo "=== RDP Port ==="
-
-          sudo ss -tlnp | grep ':3389' || true
-
-      # ==========================================
-      # DOCKER / DEBIAN 11
-      # ==========================================
-      - name: Start Debian 11 Container
-        run: |
-          set -e
-
-          echo "=== Pulling Debian 11 Bullseye ==="
-
-          docker pull debian:bullseye
-
-          echo "=== Starting Debian 11 ==="
-
-          docker rm -f debian11 2>/dev/null || true
-
-          docker run -d \
-            --name debian11 \
-            --hostname debian11 \
-            debian:bullseye \
-            tail -f /dev/null
-
-          echo ""
-          echo "=== Debian OS ==="
-
-          docker exec debian11 cat /etc/os-release
-
-      # ==========================================
-      # CONNECTION INFORMATION
-      # ==========================================
       - name: Show Connection Information
         run: |
           echo ""
@@ -322,25 +170,13 @@ jobs:
           echo "KDE Plasma"
 
           echo ""
-          echo "Docker Debian 11:"
-          echo "docker exec -it debian11 bash"
-
-          echo ""
           echo "=========================================="
 
-      # ==========================================
-      # KEEP ALIVE
-      # ==========================================
       - name: Keep Runner Alive
         run: |
-          echo ""
-          echo "=========================================="
-          echo " Runner will remain online for 6 hours"
-          echo "=========================================="
-          echo ""
+          echo "Runner will remain online for 6 hours."
 
           while true; do
             echo "[$(date)] Runner alive"
             sleep 300
           done
-```
