@@ -33,6 +33,8 @@ jobs:
         run: |
           set -e
 
+          echo "=== Installing Tailscale ==="
+
           curl -fsSL https://tailscale.com/install.sh | sh
 
           sudo systemctl enable --now tailscaled
@@ -45,6 +47,8 @@ jobs:
         run: |
           set -e
 
+          echo "=== Connecting Runner to Tailscale ==="
+
           if [ -z "$TS_AUTHKEY" ]; then
             echo "ERROR: TS_AUTHKEY secret is empty."
             exit 1
@@ -54,12 +58,19 @@ jobs:
             --auth-key="$TS_AUTHKEY" \
             --hostname="github-runner-${GITHUB_RUN_ID}"
 
-          echo "Tailscale IP:"
+          echo ""
+          echo "=== Tailscale Status ==="
+          sudo tailscale status
+
+          echo ""
+          echo "=== Tailscale IPv4 ==="
           sudo tailscale ip -4
 
-      - name: Install KDE Plasma and RDP
+      - name: Install KDE Plasma and XRDP
         run: |
           set -e
+
+          echo "=== Installing KDE Plasma ==="
 
           sudo apt-get update
 
@@ -69,9 +80,44 @@ jobs:
             dbus-x11 \
             xorgxrdp
 
-      - name: Configure KDE for XRDP
+          echo ""
+          echo "KDE Plasma and XRDP installed."
+
+      - name: Set Runner Password
+        env:
+          ROOT_PASSWORD: ${{ secrets.ROOT_PASSWORD }}
         run: |
           set -e
+
+          if [ -z "$ROOT_PASSWORD" ]; then
+            echo "ERROR: ROOT_PASSWORD secret is empty."
+            exit 1
+          fi
+
+          echo "runner:$ROOT_PASSWORD" | sudo chpasswd
+
+          echo "Runner password configured."
+
+      - name: Set Root Password
+        env:
+          ROOT_PASSWORD: ${{ secrets.ROOT_PASSWORD }}
+        run: |
+          set -e
+
+          if [ -z "$ROOT_PASSWORD" ]; then
+            echo "ERROR: ROOT_PASSWORD secret is empty."
+            exit 1
+          fi
+
+          echo "root:$ROOT_PASSWORD" | sudo chpasswd
+
+          echo "Root password configured."
+
+      - name: Configure KDE XRDP Session
+        run: |
+          set -e
+
+          echo "=== Configuring XRDP ==="
 
           sudo cp /etc/xrdp/startwm.sh /etc/xrdp/startwm.sh.backup
 
@@ -94,19 +140,27 @@ jobs:
 
           sudo chmod +x /etc/xrdp/startwm.sh
 
-      - name: Enable RDP
+          echo "KDE XRDP session configured."
+
+      - name: Configure XRDP Service
         run: |
           set -e
+
+          echo "=== Configuring XRDP service ==="
 
           sudo adduser xrdp ssl-cert || true
 
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
+          echo ""
           echo "=== XRDP Status ==="
+
           sudo systemctl status xrdp --no-pager || true
 
-          echo "=== RDP Port ==="
+          echo ""
+          echo "=== Port 3389 ==="
+
           sudo ss -tlnp | grep ':3389' || true
 
       - name: Configure SSH
@@ -115,17 +169,26 @@ jobs:
         run: |
           set -e
 
+          echo "=== Installing SSH ==="
+
           sudo apt-get update
           sudo apt-get install -y openssh-server
 
+          echo ""
+          echo "=== Creating SSH Directory ==="
+
           sudo mkdir -p /home/runner/.ssh
 
-          echo "$SSH_PUBLIC_KEY" | sudo tee /home/runner/.ssh/authorized_keys > /dev/null
+          echo "$SSH_PUBLIC_KEY" | sudo tee \
+            /home/runner/.ssh/authorized_keys > /dev/null
 
           sudo chmod 700 /home/runner/.ssh
           sudo chmod 600 /home/runner/.ssh/authorized_keys
 
           sudo chown -R runner:runner /home/runner/.ssh
+
+          echo ""
+          echo "=== Configuring SSH ==="
 
           sudo mkdir -p /run/sshd
 
@@ -139,6 +202,65 @@ jobs:
 
           sudo systemctl enable ssh
           sudo systemctl restart ssh
+
+          echo "SSH server started."
+
+      - name: Verify Services
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "           SERVICE STATUS"
+          echo "=========================================="
+
+          echo ""
+          echo "=== Tailscale ==="
+          sudo tailscale status || true
+
+          echo ""
+          echo "=== SSH ==="
+          sudo systemctl status ssh --no-pager || true
+
+          echo ""
+          echo "=== XRDP ==="
+          sudo systemctl status xrdp --no-pager || true
+
+          echo ""
+          echo "=== Listening Ports ==="
+          sudo ss -tlnp | grep -E ':22|:3389' || true
+
+          echo ""
+          echo "=== KDE ==="
+
+          if command -v plasmashell >/dev/null 2>&1; then
+            plasmashell --version || true
+          else
+            echo "KDE Plasma not found."
+          fi
+
+      - name: Start Debian 11 Container
+        run: |
+          set -e
+
+          echo "=== Pulling Debian 11 ==="
+
+          docker pull debian:bullseye
+
+          echo ""
+          echo "=== Starting Debian 11 ==="
+
+          docker rm -f debian11 2>/dev/null || true
+
+          docker run -d \
+            --name debian11 \
+            --hostname debian11 \
+            debian:bullseye \
+            tail -f /dev/null
+
+          echo ""
+          echo "=== Debian OS ==="
+
+          docker exec debian11 cat /etc/os-release
 
       - name: Show Connection Information
         run: |
@@ -154,16 +276,27 @@ jobs:
           echo "$IP"
 
           echo ""
-          echo "SSH:"
+          echo "=========================================="
+          echo "SSH"
+          echo "=========================================="
+
           echo "ssh runner@$IP"
 
           echo ""
-          echo "RDP:"
+          echo "=========================================="
+          echo "RDP"
+          echo "=========================================="
+
+          echo "Address:"
           echo "$IP:3389"
 
           echo ""
-          echo "RDP Username:"
+          echo "Username:"
           echo "runner"
+
+          echo ""
+          echo "Password:"
+          echo "The value stored in ROOT_PASSWORD secret"
 
           echo ""
           echo "Desktop:"
@@ -171,10 +304,21 @@ jobs:
 
           echo ""
           echo "=========================================="
+          echo "Docker Debian 11"
+          echo "=========================================="
+
+          echo "docker exec -it debian11 bash"
+
+          echo ""
+          echo "=========================================="
 
       - name: Keep Runner Alive
         run: |
-          echo "Runner will remain online for 6 hours."
+          echo ""
+          echo "=========================================="
+          echo " Runner will remain online for 6 hours"
+          echo "=========================================="
+          echo ""
 
           while true; do
             echo "[$(date)] Runner alive"
