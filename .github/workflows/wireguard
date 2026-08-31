@@ -1,0 +1,359 @@
+name: WireGuard Server
+
+on:
+  workflow_dispatch:
+
+jobs:
+  wireguard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install WireGuard
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            wireguard \
+            qrencode \
+            iptables \
+            curl \
+            python3
+
+      - name: Create WireGuard server
+        shell: bash
+        run: |
+          set -e
+
+          WORKDIR="$GITHUB_WORKSPACE/wireguard"
+          mkdir -p "$WORKDIR"
+
+          # -----------------------------
+          # Generate keys
+          # -----------------------------
+
+          wg genkey > "$WORKDIR/server_private.key"
+          wg pubkey < "$WORKDIR/server_private.key" > "$WORKDIR/server_public.key"
+
+          wg genkey > "$WORKDIR/client_private.key"
+          wg pubkey < "$WORKDIR/client_private.key" > "$WORKDIR/client_public.key"
+
+          chmod 600 "$WORKDIR"/*.key
+
+          SERVER_PRIVATE=$(cat "$WORKDIR/server_private.key")
+          SERVER_PUBLIC=$(cat "$WORKDIR/server_public.key")
+          CLIENT_PRIVATE=$(cat "$WORKDIR/client_private.key")
+          CLIENT_PUBLIC=$(cat "$WORKDIR/client_public.key")
+
+          # -----------------------------
+          # Detect runner interface
+          # -----------------------------
+
+          WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
+
+          if [ -z "$WAN_IF" ]; then
+            echo "Could not detect network interface"
+            exit 1
+          fi
+
+          # -----------------------------
+          # Get runner public IP
+          # -----------------------------
+
+          PUBLIC_IP=$(curl -4 -fsSL https://api.ipify.org)
+
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "Could not determine public IP"
+            exit 1
+          fi
+
+          echo "Public IP: $PUBLIC_IP"
+          echo "Interface: $WAN_IF"
+
+          # -----------------------------
+          # Server configuration
+          # -----------------------------
+
+          sudo mkdir -p /etc/wireguard
+
+          sudo tee /etc/wireguard/wg0.conf > /dev/null <<EOF
+          [Interface]
+          Address = 10.66.66.1/24
+          ListenPort = 51820
+          PrivateKey = $SERVER_PRIVATE
+
+          PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $WAN_IF -j MASQUERADE
+          PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $WAN_IF -j MASQUERADE
+
+          [Peer]
+          PublicKey = $CLIENT_PUBLIC
+          AllowedIPs = 10.66.66.2/32
+          EOF
+
+          sudo chmod 600 /etc/wireguard/wg0.conf
+
+          # -----------------------------
+          # Enable IP forwarding
+          # -----------------------------
+
+          sudo sysctl -w net.ipv4.ip_forward=1
+
+          # -----------------------------
+          # Start WireGuard
+          # -----------------------------
+
+          sudo wg-quick up wg0
+
+          sleep 2
+
+          sudo wg show
+
+          # -----------------------------
+          # Client configuration
+          # -----------------------------
+
+          cat > "$WORKDIR/client.conf" <<EOF
+          [Interface]
+          PrivateKey = $CLIENT_PRIVATE
+          Address = 10.66.66.2/24
+          DNS = 1.1.1.1
+
+          [Peer]
+          PublicKey = $SERVER_PUBLIC
+          Endpoint = $PUBLIC_IP:51820
+          AllowedIPs = 0.0.0.0/0
+          PersistentKeepalive = 25
+          EOF
+
+          chmod 600 "$WORKDIR/client.conf"
+
+          # -----------------------------
+          # Generate QR
+          # -----------------------------
+
+          qrencode \
+            -o "$WORKDIR/client-qr.png" \
+            -t PNG \
+            < "$WORKDIR/client.conf"
+
+          # -----------------------------
+          # HTML page
+          # -----------------------------
+
+          CONFIG=$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "$WORKDIR/client.conf")
+
+          cat > "$WORKDIR/index.html" <<EOF
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+            <title>WireGuard Client</title>
+
+            <style>
+              body {
+                margin: 0;
+                padding: 30px;
+                background: #111827;
+                color: #f9fafb;
+                font-family: Arial, sans-serif;
+              }
+
+              .container {
+                max-width: 800px;
+                margin: auto;
+              }
+
+              h1 {
+                margin-bottom: 8px;
+              }
+
+              .card {
+                background: #1f2937;
+                padding: 24px;
+                border-radius: 16px;
+                margin-top: 20px;
+              }
+
+              textarea {
+                width: 100%;
+                height: 300px;
+                box-sizing: border-box;
+                background: #030712;
+                color: #e5e7eb;
+                border: 1px solid #374151;
+                border-radius: 10px;
+                padding: 15px;
+                font-family: monospace;
+                resize: vertical;
+              }
+
+              button {
+                border: 0;
+                border-radius: 10px;
+                padding: 13px 20px;
+                margin-top: 12px;
+                cursor: pointer;
+                font-size: 16px;
+                font-weight: bold;
+              }
+
+              #copy {
+                background: #22c55e;
+                color: #052e16;
+              }
+
+              #download {
+                background: #374151;
+                color: white;
+                margin-left: 8px;
+              }
+
+              .qr {
+                text-align: center;
+              }
+
+              .qr img {
+                background: white;
+                padding: 15px;
+                border-radius: 12px;
+                max-width: 280px;
+              }
+
+              .success {
+                display: none;
+                margin-top: 12px;
+                color: #4ade80;
+              }
+            </style>
+          </head>
+
+          <body>
+
+          <div class="container">
+
+            <h1>WireGuard Client</h1>
+            <p>Client configuration generated by GitHub Actions.</p>
+
+            <div class="card">
+
+              <h2>Client Config</h2>
+
+              <textarea id="config" readonly></textarea>
+
+              <br>
+
+              <button id="copy" onclick="copyConfig()">
+                Copy Config
+              </button>
+
+              <button id="download" onclick="downloadConfig()">
+                Download .conf
+              </button>
+
+              <div id="success" class="success">
+                ✓ Configuration copied
+              </div>
+
+            </div>
+
+            <div class="card qr">
+
+              <h2>QR Code</h2>
+
+              <p>Scan this QR code with the WireGuard app.</p>
+
+              <img src="client-qr.png" alt="WireGuard QR">
+
+            </div>
+
+          </div>
+
+          <script>
+
+          const config = $CONFIG;
+
+          document.getElementById("config").value = config;
+
+          async function copyConfig() {
+            await navigator.clipboard.writeText(config);
+
+            const success = document.getElementById("success");
+
+            success.style.display = "block";
+
+            setTimeout(() => {
+              success.style.display = "none";
+            }, 2000);
+          }
+
+          function downloadConfig() {
+
+            const blob = new Blob(
+              [config],
+              {type: "text/plain"}
+            );
+
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement("a");
+
+            a.href = url;
+            a.download = "client.conf";
+
+            document.body.appendChild(a);
+
+            a.click();
+
+            a.remove();
+
+            URL.revokeObjectURL(url);
+          }
+
+          </script>
+
+          </body>
+          </html>
+          EOF
+
+          # -----------------------------
+          # Save server information
+          # -----------------------------
+
+          {
+            echo "WireGuard Server"
+            echo
+            echo "Endpoint: $PUBLIC_IP:51820"
+            echo "Network: 10.66.66.0/24"
+            echo "Client: 10.66.66.2"
+            echo
+            echo "Files:"
+            echo "- index.html"
+            echo "- client.conf"
+            echo "- client-qr.png"
+          } > "$WORKDIR/README.txt"
+
+      - name: Upload WireGuard package
+        uses: actions/upload-artifact@v4
+        with:
+          name: wireguard-client
+          path: wireguard/
+          retention-days: 1
+
+      - name: Show result
+        run: |
+          echo "======================================"
+          echo "WireGuard setup completed"
+          echo "======================================"
+          echo
+          echo "Download the wireguard-client artifact."
+          echo
+          echo "Open index.html in your browser."
+          echo
+          echo "It contains:"
+          echo " - Copy Config button"
+          echo " - Download .conf button"
+          echo " - QR code"
+          echo
+          echo "IMPORTANT:"
+          echo "This GitHub runner is temporary."
+          echo "The WireGuard server disappears when the job ends."
