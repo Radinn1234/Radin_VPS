@@ -1,4 +1,4 @@
-name: WireGuard Server
+name: WireGuard + Tailscale
 
 on:
   workflow_dispatch:
@@ -8,9 +8,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install WireGuard
+
+      # ==========================================
+      # Install packages
+      # ==========================================
+
+      - name: Install dependencies
         run: |
+          set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
             wireguard \
             qrencode \
@@ -18,59 +26,104 @@ jobs:
             curl \
             python3
 
+      # ==========================================
+      # Tailscale
+      # ==========================================
+
+      - name: Install and connect Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -e
+
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+          sudo tailscale up \
+            --auth-key="$TS_AUTHKEY"
+
+          echo "======================================"
+          echo "TAILSCALE"
+          echo "======================================"
+
+          tailscale ip -4
+          tailscale status
+
+      # ==========================================
+      # Create WireGuard
+      # ==========================================
+
       - name: Create WireGuard server
         shell: bash
         run: |
           set -e
 
           WORKDIR="$GITHUB_WORKSPACE/wireguard"
+
           mkdir -p "$WORKDIR"
 
-          # -----------------------------
-          # Generate keys
-          # -----------------------------
+          # --------------------------------------
+          # Generate server keys
+          # --------------------------------------
 
           wg genkey > "$WORKDIR/server_private.key"
-          wg pubkey < "$WORKDIR/server_private.key" > "$WORKDIR/server_public.key"
+
+          wg pubkey \
+            < "$WORKDIR/server_private.key" \
+            > "$WORKDIR/server_public.key"
+
+          # --------------------------------------
+          # Generate client keys
+          # --------------------------------------
 
           wg genkey > "$WORKDIR/client_private.key"
-          wg pubkey < "$WORKDIR/client_private.key" > "$WORKDIR/client_public.key"
+
+          wg pubkey \
+            < "$WORKDIR/client_private.key" \
+            > "$WORKDIR/client_public.key"
 
           chmod 600 "$WORKDIR"/*.key
 
           SERVER_PRIVATE=$(cat "$WORKDIR/server_private.key")
           SERVER_PUBLIC=$(cat "$WORKDIR/server_public.key")
+
           CLIENT_PRIVATE=$(cat "$WORKDIR/client_private.key")
           CLIENT_PUBLIC=$(cat "$WORKDIR/client_public.key")
 
-          # -----------------------------
-          # Detect runner interface
-          # -----------------------------
+          # --------------------------------------
+          # Detect interface
+          # --------------------------------------
 
           WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
 
           if [ -z "$WAN_IF" ]; then
-            echo "Could not detect network interface"
+            echo "Could not detect network interface."
             exit 1
           fi
 
-          # -----------------------------
-          # Get runner public IP
-          # -----------------------------
+          echo "WAN interface: $WAN_IF"
 
-          PUBLIC_IP=$(curl -4 -fsSL https://api.ipify.org)
+          # --------------------------------------
+          # Tailscale IP
+          # --------------------------------------
 
-          if [ -z "$PUBLIC_IP" ]; then
-            echo "Could not determine public IP"
+          TS_IP=$(tailscale ip -4)
+
+          if [ -z "$TS_IP" ]; then
+            echo "Could not get Tailscale IP."
             exit 1
           fi
 
-          echo "Public IP: $PUBLIC_IP"
-          echo "Interface: $WAN_IF"
+          echo "Tailscale IP: $TS_IP"
 
-          # -----------------------------
-          # Server configuration
-          # -----------------------------
+          # --------------------------------------
+          # Enable IPv4 forwarding
+          # --------------------------------------
+
+          sudo sysctl -w net.ipv4.ip_forward=1
+
+          # --------------------------------------
+          # WireGuard config
+          # --------------------------------------
 
           sudo mkdir -p /etc/wireguard
 
@@ -90,25 +143,23 @@ jobs:
 
           sudo chmod 600 /etc/wireguard/wg0.conf
 
-          # -----------------------------
-          # Enable IP forwarding
-          # -----------------------------
-
-          sudo sysctl -w net.ipv4.ip_forward=1
-
-          # -----------------------------
+          # --------------------------------------
           # Start WireGuard
-          # -----------------------------
+          # --------------------------------------
 
           sudo wg-quick up wg0
 
           sleep 2
 
+          echo "======================================"
+          echo "WIREGUARD"
+          echo "======================================"
+
           sudo wg show
 
-          # -----------------------------
-          # Client configuration
-          # -----------------------------
+          # --------------------------------------
+          # Client config
+          # --------------------------------------
 
           cat > "$WORKDIR/client.conf" <<EOF
           [Interface]
@@ -118,153 +169,180 @@ jobs:
 
           [Peer]
           PublicKey = $SERVER_PUBLIC
-          Endpoint = $PUBLIC_IP:51820
+          Endpoint = $TS_IP:51820
           AllowedIPs = 0.0.0.0/0
           PersistentKeepalive = 25
           EOF
 
           chmod 600 "$WORKDIR/client.conf"
 
-          # -----------------------------
-          # Generate QR
-          # -----------------------------
+          # --------------------------------------
+          # QR
+          # --------------------------------------
 
           qrencode \
-            -o "$WORKDIR/client-qr.png" \
             -t PNG \
+            -o "$WORKDIR/client-qr.png" \
             < "$WORKDIR/client.conf"
 
-          # -----------------------------
-          # HTML page
-          # -----------------------------
+          echo "Client configuration created."
 
-          CONFIG=$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "$WORKDIR/client.conf")
+      # ==========================================
+      # Create private website
+      # ==========================================
+
+      - name: Create client website
+        shell: bash
+        run: |
+          set -e
+
+          WORKDIR="$GITHUB_WORKSPACE/wireguard"
+
+          CONFIG=$(python3 -c \
+            'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' \
+            "$WORKDIR/client.conf")
 
           cat > "$WORKDIR/index.html" <<EOF
           <!DOCTYPE html>
+
           <html lang="en">
+
           <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-            <title>WireGuard Client</title>
+          <meta charset="UTF-8">
 
-            <style>
-              body {
-                margin: 0;
-                padding: 30px;
-                background: #111827;
-                color: #f9fafb;
-                font-family: Arial, sans-serif;
-              }
+          <meta
+            name="viewport"
+            content="width=device-width,initial-scale=1"
+          >
 
-              .container {
-                max-width: 800px;
-                margin: auto;
-              }
+          <title>WireGuard Client</title>
 
-              h1 {
-                margin-bottom: 8px;
-              }
+          <style>
 
-              .card {
-                background: #1f2937;
-                padding: 24px;
-                border-radius: 16px;
-                margin-top: 20px;
-              }
+          * {
+            box-sizing: border-box;
+          }
 
-              textarea {
-                width: 100%;
-                height: 300px;
-                box-sizing: border-box;
-                background: #030712;
-                color: #e5e7eb;
-                border: 1px solid #374151;
-                border-radius: 10px;
-                padding: 15px;
-                font-family: monospace;
-                resize: vertical;
-              }
+          body {
+            margin: 0;
+            padding: 30px;
+            background: #111827;
+            color: #f9fafb;
+            font-family: Arial, sans-serif;
+          }
 
-              button {
-                border: 0;
-                border-radius: 10px;
-                padding: 13px 20px;
-                margin-top: 12px;
-                cursor: pointer;
-                font-size: 16px;
-                font-weight: bold;
-              }
+          .container {
+            max-width: 850px;
+            margin: auto;
+          }
 
-              #copy {
-                background: #22c55e;
-                color: #052e16;
-              }
+          .card {
+            background: #1f2937;
+            padding: 25px;
+            border-radius: 16px;
+            margin-top: 20px;
+          }
 
-              #download {
-                background: #374151;
-                color: white;
-                margin-left: 8px;
-              }
+          textarea {
+            width: 100%;
+            min-height: 320px;
+            resize: vertical;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #374151;
+            background: #030712;
+            color: #e5e7eb;
+            font-family: monospace;
+            font-size: 14px;
+          }
 
-              .qr {
-                text-align: center;
-              }
+          button {
+            border: 0;
+            border-radius: 10px;
+            padding: 13px 20px;
+            margin-top: 12px;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: bold;
+          }
 
-              .qr img {
-                background: white;
-                padding: 15px;
-                border-radius: 12px;
-                max-width: 280px;
-              }
+          #copy {
+            background: #22c55e;
+            color: #052e16;
+          }
 
-              .success {
-                display: none;
-                margin-top: 12px;
-                color: #4ade80;
-              }
-            </style>
+          #download {
+            background: #374151;
+            color: white;
+            margin-left: 8px;
+          }
+
+          #status {
+            color: #4ade80;
+            margin-top: 12px;
+            display: none;
+          }
+
+          .qr {
+            text-align: center;
+          }
+
+          .qr img {
+            max-width: 300px;
+            background: white;
+            padding: 15px;
+            border-radius: 12px;
+          }
+
+          </style>
+
           </head>
 
           <body>
 
           <div class="container">
 
-            <h1>WireGuard Client</h1>
-            <p>Client configuration generated by GitHub Actions.</p>
+          <h1>WireGuard Client</h1>
 
-            <div class="card">
+          <p>
+          Your WireGuard client configuration
+          </p>
 
-              <h2>Client Config</h2>
+          <div class="card">
 
-              <textarea id="config" readonly></textarea>
+          <h2>Configuration</h2>
 
-              <br>
+          <textarea id="config" readonly></textarea>
 
-              <button id="copy" onclick="copyConfig()">
-                Copy Config
-              </button>
+          <button id="copy" onclick="copyConfig()">
+          Copy Config
+          </button>
 
-              <button id="download" onclick="downloadConfig()">
-                Download .conf
-              </button>
+          <button id="download" onclick="downloadConfig()">
+          Download .conf
+          </button>
 
-              <div id="success" class="success">
-                ✓ Configuration copied
-              </div>
+          <div id="status">
+          ✓ Configuration copied
+          </div>
 
-            </div>
+          </div>
 
-            <div class="card qr">
+          <div class="card qr">
 
-              <h2>QR Code</h2>
+          <h2>QR Code</h2>
 
-              <p>Scan this QR code with the WireGuard app.</p>
+          <p>
+          Scan with the WireGuard application
+          </p>
 
-              <img src="client-qr.png" alt="WireGuard QR">
+          <img
+            src="client-qr.png"
+            alt="WireGuard QR Code"
+          >
 
-            </div>
+          </div>
 
           </div>
 
@@ -275,27 +353,33 @@ jobs:
           document.getElementById("config").value = config;
 
           async function copyConfig() {
+
             await navigator.clipboard.writeText(config);
 
-            const success = document.getElementById("success");
+            const status =
+              document.getElementById("status");
 
-            success.style.display = "block";
+            status.style.display = "block";
 
             setTimeout(() => {
-              success.style.display = "none";
+              status.style.display = "none";
             }, 2000);
+
           }
 
           function downloadConfig() {
 
-            const blob = new Blob(
-              [config],
-              {type: "text/plain"}
-            );
+            const blob =
+              new Blob(
+                [config],
+                {type: "text/plain"}
+              );
 
-            const url = URL.createObjectURL(blob);
+            const url =
+              URL.createObjectURL(blob);
 
-            const a = document.createElement("a");
+            const a =
+              document.createElement("a");
 
             a.href = url;
             a.download = "client.conf";
@@ -307,53 +391,81 @@ jobs:
             a.remove();
 
             URL.revokeObjectURL(url);
+
           }
 
           </script>
 
           </body>
+
           </html>
           EOF
 
-          # -----------------------------
-          # Save server information
-          # -----------------------------
+      # ==========================================
+      # Start private web server
+      # ==========================================
 
-          {
-            echo "WireGuard Server"
-            echo
-            echo "Endpoint: $PUBLIC_IP:51820"
-            echo "Network: 10.66.66.0/24"
-            echo "Client: 10.66.66.2"
-            echo
-            echo "Files:"
-            echo "- index.html"
-            echo "- client.conf"
-            echo "- client-qr.png"
-          } > "$WORKDIR/README.txt"
+      - name: Start client website
+        run: |
+          set -e
 
-      - name: Upload WireGuard package
+          cd "$GITHUB_WORKSPACE/wireguard"
+
+          nohup python3 -m http.server 8080 \
+            --bind 127.0.0.1 \
+            > /tmp/wireguard-web.log 2>&1 &
+
+          sleep 2
+
+          tailscale serve --bg 8080
+
+          echo
+          echo "======================================"
+          echo "WEBSITE"
+          echo "======================================"
+
+          tailscale serve status
+
+      # ==========================================
+      # Upload files as backup
+      # ==========================================
+
+      - name: Upload client package
         uses: actions/upload-artifact@v4
         with:
           name: wireguard-client
-          path: wireguard/
+          path: |
+            wireguard/index.html
+            wireguard/client.conf
+            wireguard/client-qr.png
           retention-days: 1
 
-      - name: Show result
+      # ==========================================
+      # Keep runner alive for 6 hours
+      # ==========================================
+
+      - name: Keep server alive for 6 hours
         run: |
           echo "======================================"
-          echo "WireGuard setup completed"
+          echo "WIREGUARD SERVER IS RUNNING"
           echo "======================================"
+
           echo
-          echo "Download the wireguard-client artifact."
+          echo "Tailscale:"
+          tailscale ip -4
+
           echo
-          echo "Open index.html in your browser."
+          echo "WireGuard:"
+          sudo wg show
+
           echo
-          echo "It contains:"
-          echo " - Copy Config button"
-          echo " - Download .conf button"
-          echo " - QR code"
+          echo "Website:"
+          tailscale serve status
+
           echo
-          echo "IMPORTANT:"
-          echo "This GitHub runner is temporary."
-          echo "The WireGuard server disappears when the job ends."
+          echo "Keeping runner alive for 6 hours..."
+          echo
+
+          sleep 21600
+
+          echo "6 hours finished."
