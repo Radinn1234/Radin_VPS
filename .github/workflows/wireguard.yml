@@ -10,10 +10,11 @@ jobs:
     steps:
 
       # ==========================================
-      # Install packages
+      # Install dependencies
       # ==========================================
 
       - name: Install dependencies
+        shell: bash
         run: |
           set -e
 
@@ -27,26 +28,47 @@ jobs:
             python3
 
       # ==========================================
-      # Tailscale
+      # Install and connect Tailscale
       # ==========================================
 
-      - name: Install and connect Tailscale
+      - name: Setup Tailscale
+        shell: bash
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           set -e
 
-          curl -fsSL https://tailscale.com/install.sh | sh
+          if ! command -v tailscale >/dev/null 2>&1; then
+            curl -fsSL https://tailscale.com/install.sh | sh
+          fi
 
           sudo tailscale up \
             --auth-key="$TS_AUTHKEY"
 
-          echo "======================================"
-          echo "TAILSCALE"
-          echo "======================================"
+          sleep 3
 
-          tailscale ip -4
-          tailscale status
+          echo "=========================================="
+          echo "TAILSCALE STATUS"
+          echo "=========================================="
+
+          sudo tailscale status
+
+          echo
+          echo "=========================================="
+          echo "TAILSCALE IP"
+          echo "=========================================="
+
+          TS_IP=$(sudo tailscale ip -4 | head -n1)
+
+          if [ -z "$TS_IP" ]; then
+            echo "ERROR: Tailscale IPv4 not found."
+            exit 1
+          fi
+
+          echo "$TS_IP" | tee "$GITHUB_WORKSPACE/tailscale-ip.txt"
+
+          echo
+          echo "Tailscale IP: $TS_IP"
 
       # ==========================================
       # Create WireGuard
@@ -61,9 +83,9 @@ jobs:
 
           mkdir -p "$WORKDIR"
 
-          # --------------------------------------
+          # ======================================
           # Generate server keys
-          # --------------------------------------
+          # ======================================
 
           wg genkey > "$WORKDIR/server_private.key"
 
@@ -71,9 +93,9 @@ jobs:
             < "$WORKDIR/server_private.key" \
             > "$WORKDIR/server_public.key"
 
-          # --------------------------------------
+          # ======================================
           # Generate client keys
-          # --------------------------------------
+          # ======================================
 
           wg genkey > "$WORKDIR/client_private.key"
 
@@ -89,43 +111,48 @@ jobs:
           CLIENT_PRIVATE=$(cat "$WORKDIR/client_private.key")
           CLIENT_PUBLIC=$(cat "$WORKDIR/client_public.key")
 
-          # --------------------------------------
-          # Detect interface
-          # --------------------------------------
+          # ======================================
+          # Get Tailscale IP
+          # ======================================
+
+          TS_IP=$(cat "$GITHUB_WORKSPACE/tailscale-ip.txt")
+
+          if [ -z "$TS_IP" ]; then
+            echo "ERROR: Tailscale IP is empty."
+            exit 1
+          fi
+
+          echo "WireGuard Endpoint:"
+          echo "$TS_IP:51820"
+
+          # ======================================
+          # Detect outgoing interface
+          # ======================================
 
           WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
 
           if [ -z "$WAN_IF" ]; then
-            echo "Could not detect network interface."
+            echo "ERROR: Could not detect WAN interface."
             exit 1
           fi
 
           echo "WAN interface: $WAN_IF"
 
-          # --------------------------------------
-          # Tailscale IP
-          # --------------------------------------
-
-          TS_IP=$(tailscale ip -4)
-
-          if [ -z "$TS_IP" ]; then
-            echo "Could not get Tailscale IP."
-            exit 1
-          fi
-
-          echo "Tailscale IP: $TS_IP"
-
-          # --------------------------------------
+          # ======================================
           # Enable IPv4 forwarding
-          # --------------------------------------
+          # ======================================
 
           sudo sysctl -w net.ipv4.ip_forward=1
 
-          # --------------------------------------
-          # WireGuard config
-          # --------------------------------------
+          # ======================================
+          # Create WireGuard directory
+          # ======================================
 
           sudo mkdir -p /etc/wireguard
+
+          # ======================================
+          # WireGuard server config
+          # ======================================
 
           sudo tee /etc/wireguard/wg0.conf > /dev/null <<EOF
           [Interface]
@@ -143,23 +170,24 @@ jobs:
 
           sudo chmod 600 /etc/wireguard/wg0.conf
 
-          # --------------------------------------
+          # ======================================
           # Start WireGuard
-          # --------------------------------------
+          # ======================================
 
           sudo wg-quick up wg0
 
-          sleep 2
+          sleep 3
 
-          echo "======================================"
-          echo "WIREGUARD"
-          echo "======================================"
+          echo
+          echo "=========================================="
+          echo "WIREGUARD STATUS"
+          echo "=========================================="
 
           sudo wg show
 
-          # --------------------------------------
-          # Client config
-          # --------------------------------------
+          # ======================================
+          # Create client config
+          # ======================================
 
           cat > "$WORKDIR/client.conf" <<EOF
           [Interface]
@@ -176,22 +204,30 @@ jobs:
 
           chmod 600 "$WORKDIR/client.conf"
 
-          # --------------------------------------
-          # QR
-          # --------------------------------------
+          echo
+          echo "=========================================="
+          echo "CLIENT CONFIG"
+          echo "=========================================="
+
+          cat "$WORKDIR/client.conf"
+
+          # ======================================
+          # Generate QR
+          # ======================================
 
           qrencode \
             -t PNG \
             -o "$WORKDIR/client-qr.png" \
             < "$WORKDIR/client.conf"
 
-          echo "Client configuration created."
+          echo
+          echo "QR generated."
 
       # ==========================================
-      # Create private website
+      # Create HTML client page
       # ==========================================
 
-      - name: Create client website
+      - name: Create client page
         shell: bash
         run: |
           set -e
@@ -204,7 +240,6 @@ jobs:
 
           cat > "$WORKDIR/index.html" <<EOF
           <!DOCTYPE html>
-
           <html lang="en">
 
           <head>
@@ -213,7 +248,7 @@ jobs:
 
           <meta
             name="viewport"
-            content="width=device-width,initial-scale=1"
+            content="width=device-width, initial-scale=1.0"
           >
 
           <title>WireGuard Client</title>
@@ -242,6 +277,10 @@ jobs:
             padding: 25px;
             border-radius: 16px;
             margin-top: 20px;
+          }
+
+          h1 {
+            margin-bottom: 5px;
           }
 
           textarea {
@@ -306,14 +345,16 @@ jobs:
           <h1>WireGuard Client</h1>
 
           <p>
-          Your WireGuard client configuration
+          WireGuard client configuration
           </p>
 
           <div class="card">
 
-          <h2>Configuration</h2>
+          <h2>Client Config</h2>
 
           <textarea id="config" readonly></textarea>
+
+          <br>
 
           <button id="copy" onclick="copyConfig()">
           Copy Config
@@ -334,7 +375,7 @@ jobs:
           <h2>QR Code</h2>
 
           <p>
-          Scan with the WireGuard application
+          Scan this QR code using WireGuard
           </p>
 
           <img
@@ -354,26 +395,35 @@ jobs:
 
           async function copyConfig() {
 
-            await navigator.clipboard.writeText(config);
+            try {
 
-            const status =
-              document.getElementById("status");
+              await navigator.clipboard.writeText(config);
 
-            status.style.display = "block";
+              const status =
+                document.getElementById("status");
 
-            setTimeout(() => {
-              status.style.display = "none";
-            }, 2000);
+              status.style.display = "block";
+
+              setTimeout(() => {
+                status.style.display = "none";
+              }, 2000);
+
+            } catch (error) {
+
+              alert(
+                "Copy failed. Please select the text manually."
+              );
+
+            }
 
           }
 
           function downloadConfig() {
 
-            const blob =
-              new Blob(
-                [config],
-                {type: "text/plain"}
-              );
+            const blob = new Blob(
+              [config],
+              { type: "text/plain" }
+            );
 
             const url =
               URL.createObjectURL(blob);
@@ -402,70 +452,111 @@ jobs:
           EOF
 
       # ==========================================
-      # Start private web server
+      # Create README
       # ==========================================
 
-      - name: Start client website
+      - name: Create information file
+        shell: bash
         run: |
           set -e
 
-          cd "$GITHUB_WORKSPACE/wireguard"
+          TS_IP=$(cat "$GITHUB_WORKSPACE/tailscale-ip.txt")
 
-          nohup python3 -m http.server 8080 \
-            --bind 127.0.0.1 \
-            > /tmp/wireguard-web.log 2>&1 &
+          cat > "$GITHUB_WORKSPACE/wireguard/README.txt" <<EOF
+          WireGuard Server
+          =================
 
-          sleep 2
+          Tailscale IP:
+          $TS_IP
 
-          tailscale serve --bg 8080
+          WireGuard Endpoint:
+          $TS_IP:51820
 
-          echo
-          echo "======================================"
-          echo "WEBSITE"
-          echo "======================================"
+          WireGuard Network:
+          10.66.66.0/24
 
-          tailscale serve status
+          Client:
+          10.66.66.2
+
+          Files:
+          - client.conf
+          - client-qr.png
+          - index.html
+
+          IMPORTANT:
+          This server is running on a temporary GitHub Actions runner.
+
+          The server will disappear when the runner/job ends.
+          EOF
 
       # ==========================================
-      # Upload files as backup
+      # Upload client package
       # ==========================================
 
-      - name: Upload client package
+      - name: Upload WireGuard client
         uses: actions/upload-artifact@v4
         with:
           name: wireguard-client
           path: |
-            wireguard/index.html
             wireguard/client.conf
             wireguard/client-qr.png
+            wireguard/index.html
+            wireguard/README.txt
           retention-days: 1
+
+      # ==========================================
+      # Display information
+      # ==========================================
+
+      - name: Show server information
+        shell: bash
+        run: |
+          echo
+          echo "=========================================="
+          echo "WIREGUARD SERVER IS RUNNING"
+          echo "=========================================="
+
+          TS_IP=$(cat "$GITHUB_WORKSPACE/tailscale-ip.txt")
+
+          echo
+          echo "Tailscale IP:"
+          echo "$TS_IP"
+
+          echo
+          echo "WireGuard Endpoint:"
+          echo "$TS_IP:51820"
+
+          echo
+          echo "Client:"
+          echo "10.66.66.2"
+
+          echo
+          echo "Artifact:"
+          echo "wireguard-client"
+
+          echo
+          echo "The artifact contains:"
+          echo "  - client.conf"
+          echo "  - client-qr.png"
+          echo "  - index.html"
+          echo "  - README.txt"
 
       # ==========================================
       # Keep runner alive for 6 hours
       # ==========================================
 
       - name: Keep server alive for 6 hours
+        shell: bash
         run: |
-          echo "======================================"
-          echo "WIREGUARD SERVER IS RUNNING"
-          echo "======================================"
+          echo
+          echo "=========================================="
+          echo "SERVER WILL STAY ONLINE FOR 6 HOURS"
+          echo "=========================================="
 
           echo
-          echo "Tailscale:"
-          tailscale ip -4
-
-          echo
-          echo "WireGuard:"
-          sudo wg show
-
-          echo
-          echo "Website:"
-          tailscale serve status
-
-          echo
-          echo "Keeping runner alive for 6 hours..."
-          echo
+          echo "21600 seconds remaining."
 
           sleep 21600
 
+          echo
           echo "6 hours finished."
