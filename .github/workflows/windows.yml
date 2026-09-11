@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Enable RDP
         shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           Write-Host "Enabling Remote Desktop..."
 
@@ -20,24 +22,45 @@ jobs:
             -Name "fDenyTSConnections" `
             -Value 0
 
-          # Allow RDP through Windows Firewall
+          # Enable RDP firewall rules
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          # Create local RDP user
+          # Get password
           $password = ConvertTo-SecureString `
-            "${{ secrets.RDP_PASSWORD }}" `
+            $env:RDP_PASSWORD `
             -AsPlainText `
             -Force
 
-          New-LocalUser `
-            -Name "runneradmin" `
-            -Password $password `
-            -FullName "RDP Administrator" `
-            -Description "Temporary RDP user"
+          # Check whether runneradmin already exists
+          $user = Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue
 
+          if ($null -eq $user) {
+              Write-Host "Creating runneradmin..."
+
+              New-LocalUser `
+                -Name "runneradmin" `
+                -Password $password `
+                -FullName "RDP Administrator" `
+                -Description "Temporary RDP user"
+          }
+          else {
+              Write-Host "runneradmin already exists."
+              Write-Host "Updating password..."
+
+              Set-LocalUser `
+                -Name "runneradmin" `
+                -Password $password
+          }
+
+          # Make sure the user is an administrator
           Add-LocalGroupMember `
             -Group "Administrators" `
-            -Member "runneradmin"
+            -Member "runneradmin" `
+            -ErrorAction SilentlyContinue
+
+          # Make sure RDP service is running
+          Set-Service -Name "TermService" -StartupType Automatic
+          Start-Service -Name "TermService"
 
           Write-Host "RDP enabled successfully."
 
@@ -110,13 +133,16 @@ jobs:
           Get-Service TermService
 
           Write-Host ""
-          Write-Host "Listening ports:"
-          Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue
+          Write-Host "Checking port 3389..."
+
+          Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -ErrorAction SilentlyContinue
 
       - name: Keep runner alive
         shell: powershell
         run: |
-          Write-Host "Runner will stay alive until the 6-hour job limit."
+          Write-Host "Windows RDP runner is running."
 
           while ($true) {
             $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
