@@ -1,7 +1,7 @@
 FROM debian:11
 
 RUN apt-get update && \
-    apt-get install -y openssh-server && \
+    apt-get install -y --no-install-recommends openssh-server && \
     rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /run/sshd && \
