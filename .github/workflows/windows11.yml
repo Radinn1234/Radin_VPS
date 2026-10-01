@@ -1,235 +1,196 @@
 name: Windows RDP + WireGuard + Tailscale
 
 on:
-workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
-rdp:
-runs-on: windows-2025
-timeout-minutes: 360
+  rdp:
+    runs-on: windows-2025
+    timeout-minutes: 360
 
-steps:
-  - name: Enable RDP
-    shell: powershell
-    env:
-      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-    run: |
-      Write-Host "Enabling Remote Desktop..."
+    steps:
+      - name: Enable RDP
+        shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          Write-Host "Enabling Remote Desktop..."
 
-      Set-ItemProperty `
-        -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-        -Name "fDenyTSConnections" `
-        -Value 0
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
 
-      Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-      $password = ConvertTo-SecureString `
-        $env:RDP_PASSWORD `
-        -AsPlainText `
-        -Force
+          $password = ConvertTo-SecureString `
+            $env:RDP_PASSWORD `
+            -AsPlainText `
+            -Force
 
-      $user = Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue
+          $user = Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue
 
-      if ($null -eq $user) {
-          New-LocalUser `
-            -Name "runneradmin" `
-            -Password $password `
-            -FullName "RDP Administrator" `
-            -Description "Temporary RDP user"
-      }
-      else {
-          Set-LocalUser `
-            -Name "runneradmin" `
-            -Password $password
-      }
+          if ($null -eq $user) {
+              New-LocalUser `
+                -Name "runneradmin" `
+                -Password $password `
+                -FullName "RDP Administrator"
+          }
+          else {
+              Set-LocalUser `
+                -Name "runneradmin" `
+                -Password $password
+          }
 
-      Add-LocalGroupMember `
-        -Group "Administrators" `
-        -Member "runneradmin" `
-        -ErrorAction SilentlyContinue
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member "runneradmin" `
+            -ErrorAction SilentlyContinue
 
-      Set-Service -Name "TermService" -StartupType Automatic
-      Start-Service -Name "TermService"
+          Set-Service -Name "TermService" -StartupType Automatic
+          Start-Service -Name "TermService"
 
-      Write-Host "RDP enabled successfully."
+      - name: Install WireGuard
+        shell: powershell
+        run: |
+          Write-Host "Downloading WireGuard..."
 
-  - name: Install WireGuard
-    shell: powershell
-    run: |
-      Write-Host "Downloading WireGuard..."
+          $url = "https://download.wireguard.com/windows-client/wireguard-amd64-1.1.1.msi"
+          $installer = "$env:TEMP\wireguard.msi"
 
-      $url = "https://download.wireguard.com/windows-client/wireguard-amd64-1.1.1.msi"
-      $installer = "$env:TEMP\wireguard.msi"
+          Invoke-WebRequest -Uri $url -OutFile $installer
 
-      Invoke-WebRequest `
-        -Uri $url `
-        -OutFile $installer
+          Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList "/i `"$installer`" /qn /norestart" `
+            -Wait
 
-      Write-Host "Installing WireGuard..."
+          Write-Host "WireGuard installed."
 
-      Start-Process `
-        -FilePath "msiexec.exe" `
-        -ArgumentList "/i `"$installer`" /qn /norestart" `
-        -Wait
+      - name: Create WireGuard configuration
+        shell: powershell
+        env:
+          WG_CONFIG: ${{ secrets.WG }}
+        run: |
+          $configDir = "C:\Program Files\WireGuard\Data\Configurations"
 
-      Write-Host "WireGuard installed."
+          New-Item `
+            -ItemType Directory `
+            -Path $configDir `
+            -Force | Out-Null
 
-  - name: Configure WireGuard
-    shell: powershell
-    env:
-      WG_CONFIG: ${{ secrets.WG_CONFIG }}
-    run: |
-      Write-Host "Creating WireGuard configuration..."
+          $configPath = "$configDir\rdp.conf"
 
-      $configPath = "C:\Program Files\WireGuard\Data\Configurations\rdp.conf"
+          [System.IO.File]::WriteAllText(
+            $configPath,
+            $env:WG_CONFIG,
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
-      New-Item `
-        -ItemType Directory `
-        -Path "C:\Program Files\WireGuard\Data\Configurations" `
-        -Force | Out-Null
+          Write-Host "WireGuard configuration created."
 
-      [System.IO.File]::WriteAllText(
-        $configPath,
-        $env:WG_CONFIG,
-        [System.Text.UTF8Encoding]::new($false)
-      )
+      - name: Connect WireGuard
+        shell: powershell
+        run: |
+          Write-Host "Connecting WireGuard..."
 
-      Write-Host "WireGuard configuration created."
+          $wg = "C:\Program Files\WireGuard\wireguard.exe"
+          $config = "C:\Program Files\WireGuard\Data\Configurations\rdp.conf"
 
-  - name: Connect WireGuard
-    shell: powershell
-    run: |
-      Write-Host "Connecting WireGuard..."
+          & $wg /installtunnelservice $config
 
-      $wg = "C:\Program Files\WireGuard\wireguard.exe"
+          Start-Sleep -Seconds 8
 
-      & $wg /installtunnelservice `
-        "C:\Program Files\WireGuard\Data\Configurations\rdp.conf"
+          Write-Host ""
+          Write-Host "===== WireGuard Service ====="
 
-      Start-Sleep -Seconds 8
+          Get-Service | Where-Object {
+              $_.Name -like "WireGuardTunnel*"
+          } | Format-Table Name, Status
 
-      Write-Host ""
-      Write-Host "===== WireGuard Status ====="
+          Write-Host ""
+          Write-Host "Testing connection to azar..."
 
-      Get-Service | Where-Object {
-        $_.Name -like "WireGuardTunnel*" -or
-        $_.DisplayName -like "*WireGuard*"
-      } | Format-Table Name, Status
+          ping.exe -n 4 172.31.250.1
 
-      Write-Host ""
-      Write-Host "Testing WireGuard server..."
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          Write-Host "Installing Tailscale..."
 
-      ping.exe -n 4 172.31.250.1
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
 
-  - name: Check WireGuard network
-    shell: powershell
-    run: |
-      Write-Host "===== Network Configuration ====="
-      Get-NetIPConfiguration | Format-Table InterfaceAlias, IPv4Address, IPv4DefaultGateway
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer
 
-      Write-Host ""
-      Write-Host "===== Route to WireGuard server ====="
-      Get-NetRoute -DestinationPrefix "172.31.250.1/32" -ErrorAction SilentlyContinue
+          Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList "/i `"$installer`" /quiet /norestart" `
+            -Wait
 
-  - name: Install Tailscale
-    shell: powershell
-    run: |
-      Write-Host "Installing Tailscale..."
+      - name: Connect Tailscale
+        shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-      $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-      $installer = "$env:TEMP\tailscale.msi"
+          & $tailscale up `
+            --authkey="$env:TS_AUTHKEY" `
+            --hostname="github-windows-rdp"
 
-      Invoke-WebRequest `
-        -Uri $url `
-        -OutFile $installer
+          Start-Sleep -Seconds 5
 
-      Start-Process `
-        -FilePath "msiexec.exe" `
-        -ArgumentList "/i `"$installer`" /quiet /norestart" `
-        -Wait
+          $ip = & $tailscale ip -4
 
-      Write-Host "Tailscale installed."
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       WINDOWS RDP IS READY"
+          Write-Host "========================================"
+          Write-Host ""
+          Write-Host "WireGuard: CONNECTED"
+          Write-Host "Azar: 172.31.250.1"
+          Write-Host ""
+          Write-Host "Tailscale IP:"
+          Write-Host $ip
+          Write-Host ""
+          Write-Host "RDP:"
+          Write-Host "$ip`:3389"
+          Write-Host ""
+          Write-Host "Username: runneradmin"
+          Write-Host "Password: RDP_PASSWORD"
+          Write-Host "========================================"
 
-  - name: Connect Tailscale
-    shell: powershell
-    env:
-      TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
-    run: |
-      Write-Host "Connecting to Tailscale..."
+      - name: Check RDP
+        shell: powershell
+        run: |
+          Write-Host "===== RDP Service ====="
+          Get-Service TermService
 
-      $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          Write-Host ""
+          Write-Host "===== Port 3389 ====="
 
-      & $tailscale up `
-        --authkey="$env:TS_AUTHKEY" `
-        --hostname="github-windows-rdp"
+          Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -ErrorAction SilentlyContinue
 
-      Write-Host "Tailscale connected."
+      - name: Keep runner alive
+        shell: powershell
+        run: |
+          Write-Host "Windows RDP runner is running."
 
-  - name: Get Tailscale IP
-    shell: powershell
-    run: |
-      Start-Sleep -Seconds 5
+          while ($true) {
+              Write-Host ""
+              Write-Host "===== WireGuard ====="
 
-      $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-      $ip = & $tailscale ip -4
+              Get-Service | Where-Object {
+                  $_.Name -like "WireGuardTunnel*"
+              } | Format-Table Name, Status
 
-      Write-Host ""
-      Write-Host "========================================"
-      Write-Host "       WINDOWS RDP IS READY"
-      Write-Host "========================================"
-      Write-Host ""
-      Write-Host "WireGuard:"
-      Write-Host "Connected to 172.31.250.1"
-      Write-Host ""
-      Write-Host "Tailscale IP:"
-      Write-Host $ip
-      Write-Host ""
-      Write-Host "RDP Address:"
-      Write-Host "$ip`:3389"
-      Write-Host ""
-      Write-Host "Username:"
-      Write-Host "runneradmin"
-      Write-Host ""
-      Write-Host "Password:"
-      Write-Host "The value stored in RDP_PASSWORD"
-      Write-Host ""
-      Write-Host "========================================"
+              Write-Host ""
+              Write-Host "RDP is still running..."
 
-  - name: Check RDP
-    shell: powershell
-    run: |
-      Write-Host "Checking RDP service..."
-
-      Get-Service TermService
-
-      Write-Host ""
-      Write-Host "Checking port 3389..."
-
-      Get-NetTCPConnection `
-        -LocalPort 3389 `
-        -ErrorAction SilentlyContinue
-
-  - name: Keep runner alive
-    shell: powershell
-    run: |
-      Write-Host "Windows RDP runner is running."
-
-      while ($true) {
-        $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-
-        Write-Host ""
-        Write-Host "===== Tailscale Status ====="
-        & $tailscale status
-
-        Write-Host ""
-        Write-Host "===== WireGuard Status ====="
-
-        Get-Service | Where-Object {
-          $_.Name -like "WireGuardTunnel*"
-        } | Format-Table Name, Status
-
-        Write-Host ""
-        Write-Host "RDP is still running..."
-
-        Start-Sleep -Seconds 60
-      }
+              Start-Sleep -Seconds 60
+          }
