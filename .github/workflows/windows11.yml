@@ -11,7 +11,7 @@ jobs:
     steps:
 
       # =========================================
-      # RDP
+      # ENABLE RDP
       # =========================================
 
       - name: Enable RDP
@@ -76,7 +76,7 @@ jobs:
 
 
       # =========================================
-      # WIREGUARD INSTALL
+      # INSTALL WIREGUARD
       # =========================================
 
       - name: Install WireGuard
@@ -139,7 +139,7 @@ jobs:
 
 
       # =========================================
-      # CREATE CONFIG
+      # CREATE WIREGUARD CONFIG
       # =========================================
 
       - name: Create WireGuard configuration
@@ -180,7 +180,7 @@ jobs:
 
 
       # =========================================
-      # CONNECT WIREGUARD
+      # WIREGUARD DIAGNOSTICS + CONNECT
       # =========================================
 
       - name: Connect WireGuard
@@ -191,50 +191,83 @@ jobs:
           $config = "C:\WireGuard\rdp.conf"
 
           Write-Host "========================================"
-          Write-Host "       CONNECTING WIREGUARD"
+          Write-Host "       WIREGUARD DIAGNOSTICS"
           Write-Host "========================================"
 
           Write-Host ""
-          Write-Host "Checking files..."
+          Write-Host "WireGuard:"
+          Get-Item $wg |
+            Select-Object FullName, Length
 
-          Write-Host "wireguard.exe:"
-          Test-Path $wg
-
+          Write-Host ""
           Write-Host "wg.exe:"
-          Test-Path $wgExe
+          Get-Item $wgExe |
+            Select-Object FullName, Length
 
-          Write-Host "rdp.conf:"
-          Test-Path $config
+          Write-Host ""
+          Write-Host "Config:"
+          Get-Item $config |
+            Select-Object FullName, Length
 
-          if (-not (Test-Path $wg)) {
-              throw "wireguard.exe not found."
-          }
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       WIREGUARD VERSION"
+          Write-Host "========================================"
 
-          if (-not (Test-Path $wgExe)) {
-              throw "wg.exe not found."
-          }
+          & $wg /version
 
-          if (-not (Test-Path $config)) {
-              throw "rdp.conf not found."
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       INSTALL TUNNEL SERVICE"
+          Write-Host "========================================"
+
+          $outputFile = "$env:TEMP\wireguard-output.txt"
+          $errorFile = "$env:TEMP\wireguard-error.txt"
+
+          Remove-Item `
+            $outputFile `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Remove-Item `
+            $errorFile `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          $process = Start-Process `
+            -FilePath $wg `
+            -ArgumentList "/installtunnelservice `"$config`"" `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $outputFile `
+            -RedirectStandardError $errorFile
+
+          Write-Host ""
+          Write-Host "Process ID:"
+          Write-Host $process.Id
+
+          Write-Host ""
+          Write-Host "Exit code:"
+          Write-Host $process.ExitCode
+
+          Write-Host ""
+          Write-Host "===== STDOUT ====="
+
+          if (Test-Path $outputFile) {
+              Get-Content $outputFile
           }
 
           Write-Host ""
-          Write-Host "Installing WireGuard tunnel service..."
+          Write-Host "===== STDERR ====="
 
-          & $wg /installtunnelservice $config
-
-          $exitCode = $LASTEXITCODE
-
-          Write-Host ""
-          Write-Host "WireGuard exit code:"
-          Write-Host $exitCode
-
-          if ($exitCode -ne 0) {
-              throw "WireGuard tunnel service installation failed."
+          if (Test-Path $errorFile) {
+              Get-Content $errorFile
           }
 
           Write-Host ""
-          Write-Host "Waiting for tunnel..."
+          Write-Host "========================================"
+          Write-Host "       WAITING FOR TUNNEL"
+          Write-Host "========================================"
 
           Start-Sleep -Seconds 10
 
@@ -247,7 +280,11 @@ jobs:
             Where-Object {
               $_.Name -like "*WireGuard*"
             } |
-            Format-List Name, DisplayName, Status, StartType
+            Format-List `
+              Name,
+              DisplayName,
+              Status,
+              StartType
 
           Write-Host ""
           Write-Host "========================================"
@@ -258,7 +295,9 @@ jobs:
             Where-Object {
               $_.ProcessName -like "*wireguard*"
             } |
-            Format-Table ProcessName, Id
+            Format-Table `
+              ProcessName,
+              Id
 
           Write-Host ""
           Write-Host "========================================"
@@ -266,10 +305,6 @@ jobs:
           Write-Host "========================================"
 
           & $wgExe show
-
-          Write-Host ""
-          Write-Host "wg.exe exit code:"
-          Write-Host $LASTEXITCODE
 
           Write-Host ""
           Write-Host "========================================"
@@ -316,7 +351,7 @@ jobs:
 
           Get-WinEvent `
             -LogName System `
-            -MaxEvents 200 `
+            -MaxEvents 300 `
             -ErrorAction SilentlyContinue |
             Where-Object {
               $_.ProviderName -like "*WireGuard*"
@@ -337,11 +372,17 @@ jobs:
           ping.exe -n 4 172.31.250.1
 
           Write-Host ""
-          Write-Host "WireGuard test completed."
+          Write-Host "========================================"
+          Write-Host "       WIREGUARD TEST FINISHED"
+          Write-Host "========================================"
+
+          if ($process.ExitCode -ne 0) {
+              throw "WireGuard returned exit code $($process.ExitCode)."
+          }
 
 
       # =========================================
-      # TAILSCALE INSTALL
+      # INSTALL TAILSCALE
       # =========================================
 
       - name: Install Tailscale
@@ -378,7 +419,7 @@ jobs:
 
 
       # =========================================
-      # TAILSCALE CONNECT
+      # CONNECT TAILSCALE
       # =========================================
 
       - name: Connect Tailscale
@@ -448,7 +489,7 @@ jobs:
 
 
       # =========================================
-      # RDP CHECK
+      # CHECK RDP
       # =========================================
 
       - name: Check RDP
