@@ -1,193 +1,235 @@
-name: Windows 11 KVM VM
+name: Windows RDP + WireGuard + Tailscale
 
 on:
-  workflow_dispatch:
+workflow_dispatch:
 
 jobs:
-  windows11:
+rdp:
+runs-on: windows-2025
+timeout-minutes: 360
 
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+steps:
+  - name: Enable RDP
+    shell: powershell
+    env:
+      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+    run: |
+      Write-Host "Enabling Remote Desktop..."
 
-    steps:
+      Set-ItemProperty `
+        -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+        -Name "fDenyTSConnections" `
+        -Value 0
 
-    - name: Install packages
-      run: |
-        sudo apt update
+      Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-        sudo apt install -y \
-          qemu-kvm \
-          qemu-system-x86 \
-          qemu-utils \
-          ovmf \
-          swtpm \
-          genisoimage \
-          tmux \
-          wget \
-          cpu-checker
+      $password = ConvertTo-SecureString `
+        $env:RDP_PASSWORD `
+        -AsPlainText `
+        -Force
 
-        echo "===== KVM CHECK ====="
-        kvm-ok
+      $user = Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue
 
-    - name: Install Tailscale
-      run: |
-        curl -fsSL https://tailscale.com/install.sh | sh
-        sudo systemctl enable --now tailscaled
+      if ($null -eq $user) {
+          New-LocalUser `
+            -Name "runneradmin" `
+            -Password $password `
+            -FullName "RDP Administrator" `
+            -Description "Temporary RDP user"
+      }
+      else {
+          Set-LocalUser `
+            -Name "runneradmin" `
+            -Password $password
+      }
 
-    - name: Connect Tailscale
-      env:
-        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
-      run: |
-        sudo tailscale up \
-          --auth-key="$TS_AUTHKEY" \
-          --hostname="win11-${GITHUB_RUN_ID}"
+      Add-LocalGroupMember `
+        -Group "Administrators" `
+        -Member "runneradmin" `
+        -ErrorAction SilentlyContinue
 
-        echo "Tailscale IP:"
-        sudo tailscale ip -4
+      Set-Service -Name "TermService" -StartupType Automatic
+      Start-Service -Name "TermService"
 
-    - name: Download Windows ISO
-      run: |
-        wget -O Windows11.iso \
-        "https://mirror.hep.gg/ISO/Windows/11/Win11_25H2_EnglishInternational_x64_v2.iso"
+      Write-Host "RDP enabled successfully."
 
-        ls -lh Windows11.iso
+  - name: Install WireGuard
+    shell: powershell
+    run: |
+      Write-Host "Downloading WireGuard..."
 
-    - name: Create Windows disk
-      run: |
-        qemu-img create \
-          -f qcow2 \
-          win11.qcow2 \
-          80G
+      $url = "https://download.wireguard.com/windows-client/wireguard-amd64-1.1.1.msi"
+      $installer = "$env:TEMP\wireguard.msi"
 
-    - name: Create TPM
-      run: |
-        mkdir -p /tmp/win11-tpm
+      Invoke-WebRequest `
+        -Uri $url `
+        -OutFile $installer
 
-        sudo swtpm socket \
-          --tpm2 \
-          --tpmstate dir=/tmp/win11-tpm \
-          --ctrl type=unixio,path=/tmp/win11-tpm/swtpm.sock \
-          --daemon
+      Write-Host "Installing WireGuard..."
 
-    - name: Create unattended configuration
-      run: |
-        mkdir -p /tmp/win11-autounattend
+      Start-Process `
+        -FilePath "msiexec.exe" `
+        -ArgumentList "/i `"$installer`" /qn /norestart" `
+        -Wait
 
-        cat > /tmp/win11-autounattend/autounattend.xml <<'EOF'
-        <?xml version="1.0" encoding="utf-8"?>
-        <unattend xmlns="urn:schemas-microsoft-com:unattend">
+      Write-Host "WireGuard installed."
 
-          <settings pass="windowsPE">
+  - name: Configure WireGuard
+    shell: powershell
+    env:
+      WG_CONFIG: ${{ secrets.WG_CONFIG }}
+    run: |
+      Write-Host "Creating WireGuard configuration..."
 
-            <component
-              name="Microsoft-Windows-Setup"
-              processorArchitecture="amd64"
-              publicKeyToken="31bf3856ad364e35"
-              language="neutral"
-              versionScope="nonSxS">
+      $configPath = "C:\Program Files\WireGuard\Data\Configurations\rdp.conf"
 
-              <RunSynchronous>
+      New-Item `
+        -ItemType Directory `
+        -Path "C:\Program Files\WireGuard\Data\Configurations" `
+        -Force | Out-Null
 
-                <RunSynchronousCommand wcm:action="add">
-                  <Order>1</Order>
-                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
-                </RunSynchronousCommand>
+      [System.IO.File]::WriteAllText(
+        $configPath,
+        $env:WG_CONFIG,
+        [System.Text.UTF8Encoding]::new($false)
+      )
 
-                <RunSynchronousCommand wcm:action="add">
-                  <Order>2</Order>
-                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
-                </RunSynchronousCommand>
+      Write-Host "WireGuard configuration created."
 
-                <RunSynchronousCommand wcm:action="add">
-                  <Order>3</Order>
-                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
-                </RunSynchronousCommand>
+  - name: Connect WireGuard
+    shell: powershell
+    run: |
+      Write-Host "Connecting WireGuard..."
 
-                <RunSynchronousCommand wcm:action="add">
-                  <Order>4</Order>
-                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
-                </RunSynchronousCommand>
+      $wg = "C:\Program Files\WireGuard\wireguard.exe"
 
-                <RunSynchronousCommand wcm:action="add">
-                  <Order>5</Order>
-                  <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassStorageCheck /t REG_DWORD /d 1 /f</Path>
-                </RunSynchronousCommand>
+      & $wg /installtunnelservice `
+        "C:\Program Files\WireGuard\Data\Configurations\rdp.conf"
 
-              </RunSynchronous>
+      Start-Sleep -Seconds 8
 
-            </component>
+      Write-Host ""
+      Write-Host "===== WireGuard Status ====="
 
-          </settings>
+      Get-Service | Where-Object {
+        $_.Name -like "WireGuardTunnel*" -or
+        $_.DisplayName -like "*WireGuard*"
+      } | Format-Table Name, Status
 
-        </unattend>
-        EOF
+      Write-Host ""
+      Write-Host "Testing WireGuard server..."
 
-        cat /tmp/win11-autounattend/autounattend.xml
+      ping.exe -n 4 172.31.250.1
 
-        genisoimage \
-          -quiet \
-          -J \
-          -R \
-          -V AUTOUNATTEND \
-          -o autounattend.iso \
-          /tmp/win11-autounattend
+  - name: Check WireGuard network
+    shell: powershell
+    run: |
+      Write-Host "===== Network Configuration ====="
+      Get-NetIPConfiguration | Format-Table InterfaceAlias, IPv4Address, IPv4DefaultGateway
 
-        ls -lh autounattend.iso
+      Write-Host ""
+      Write-Host "===== Route to WireGuard server ====="
+      Get-NetRoute -DestinationPrefix "172.31.250.1/32" -ErrorAction SilentlyContinue
 
-    - name: Start Windows VM
-      run: |
+  - name: Install Tailscale
+    shell: powershell
+    run: |
+      Write-Host "Installing Tailscale..."
 
-        tmux new-session -d -s win11 \
-        "sudo qemu-system-x86_64 \
-          -enable-kvm \
-          -machine q35,smm=on \
-          -cpu host \
-          -smp 3 \
-          -m 8192 \
-          -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-          -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
-          -drive file=win11.qcow2,format=qcow2 \
-          -drive file=autounattend.iso,media=cdrom,readonly=on \
-          -cdrom Windows11.iso \
-          -boot d \
-          -chardev socket,id=chrtpm,path=/tmp/win11-tpm/swtpm.sock \
-          -tpmdev emulator,id=tpm0,chardev=chrtpm \
-          -device tpm-tis,tpmdev=tpm0 \
-          -spice addr=0.0.0.0,port=5900,disable-ticketing=on \
-          -vga qxl"
+      $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+      $installer = "$env:TEMP\tailscale.msi"
 
-    - name: Show connection
-      run: |
+      Invoke-WebRequest `
+        -Uri $url `
+        -OutFile $installer
 
-        IP=$(sudo tailscale ip -4)
+      Start-Process `
+        -FilePath "msiexec.exe" `
+        -ArgumentList "/i `"$installer`" /quiet /norestart" `
+        -Wait
 
-        echo ""
-        echo "======================================"
-        echo "Windows 11 VM Started"
-        echo "======================================"
-        echo ""
-        echo "Tailscale IP:"
-        echo "$IP"
-        echo ""
-        echo "SPICE:"
-        echo "spice://$IP:5900"
-        echo ""
-        echo "======================================"
+      Write-Host "Tailscale installed."
 
-    - name: Monitor VM
-      run: |
-        while true
-        do
-          echo ""
-          echo "[$(date)] Windows VM status"
+  - name: Connect Tailscale
+    shell: powershell
+    env:
+      TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+    run: |
+      Write-Host "Connecting to Tailscale..."
 
-          if pgrep -f "qemu-system-x86_64" >/dev/null
-          then
-            echo "VM: RUNNING"
-          else
-            echo "VM: STOPPED"
-            exit 1
-          fi
+      $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          sleep 60
-        done
+      & $tailscale up `
+        --authkey="$env:TS_AUTHKEY" `
+        --hostname="github-windows-rdp"
+
+      Write-Host "Tailscale connected."
+
+  - name: Get Tailscale IP
+    shell: powershell
+    run: |
+      Start-Sleep -Seconds 5
+
+      $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+      $ip = & $tailscale ip -4
+
+      Write-Host ""
+      Write-Host "========================================"
+      Write-Host "       WINDOWS RDP IS READY"
+      Write-Host "========================================"
+      Write-Host ""
+      Write-Host "WireGuard:"
+      Write-Host "Connected to 172.31.250.1"
+      Write-Host ""
+      Write-Host "Tailscale IP:"
+      Write-Host $ip
+      Write-Host ""
+      Write-Host "RDP Address:"
+      Write-Host "$ip`:3389"
+      Write-Host ""
+      Write-Host "Username:"
+      Write-Host "runneradmin"
+      Write-Host ""
+      Write-Host "Password:"
+      Write-Host "The value stored in RDP_PASSWORD"
+      Write-Host ""
+      Write-Host "========================================"
+
+  - name: Check RDP
+    shell: powershell
+    run: |
+      Write-Host "Checking RDP service..."
+
+      Get-Service TermService
+
+      Write-Host ""
+      Write-Host "Checking port 3389..."
+
+      Get-NetTCPConnection `
+        -LocalPort 3389 `
+        -ErrorAction SilentlyContinue
+
+  - name: Keep runner alive
+    shell: powershell
+    run: |
+      Write-Host "Windows RDP runner is running."
+
+      while ($true) {
+        $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+        Write-Host ""
+        Write-Host "===== Tailscale Status ====="
+        & $tailscale status
+
+        Write-Host ""
+        Write-Host "===== WireGuard Status ====="
+
+        Get-Service | Where-Object {
+          $_.Name -like "WireGuardTunnel*"
+        } | Format-Table Name, Status
+
+        Write-Host ""
+        Write-Host "RDP is still running..."
+
+        Start-Sleep -Seconds 60
+      }
