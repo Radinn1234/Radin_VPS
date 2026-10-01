@@ -10,12 +10,18 @@ jobs:
 
     steps:
 
+      # =========================================
+      # RDP
+      # =========================================
+
       - name: Enable RDP
         shell: powershell
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          Write-Host "Enabling Remote Desktop..."
+          Write-Host "========================================"
+          Write-Host "           ENABLING RDP"
+          Write-Host "========================================"
 
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
@@ -69,13 +75,21 @@ jobs:
           Write-Host "RDP enabled successfully."
 
 
+      # =========================================
+      # WIREGUARD INSTALL
+      # =========================================
+
       - name: Install WireGuard
         shell: powershell
         run: |
-          Write-Host "Downloading WireGuard..."
+          Write-Host "========================================"
+          Write-Host "       INSTALLING WIREGUARD"
+          Write-Host "========================================"
 
           $url = "https://download.wireguard.com/windows-client/wireguard-amd64-1.1.1.msi"
           $installer = "$env:TEMP\wireguard.msi"
+
+          Write-Host "Downloading WireGuard..."
 
           Invoke-WebRequest `
             -Uri $url `
@@ -99,29 +113,55 @@ jobs:
               throw "WireGuard installation failed."
           }
 
+          Start-Sleep -Seconds 3
+
+          $wg = "C:\Program Files\WireGuard\wireguard.exe"
+          $wgExe = "C:\Program Files\WireGuard\wg.exe"
+
+          Write-Host ""
+          Write-Host "Checking WireGuard files..."
+
+          Write-Host "wireguard.exe:"
+          Test-Path $wg
+
+          Write-Host "wg.exe:"
+          Test-Path $wgExe
+
+          if (-not (Test-Path $wg)) {
+              throw "wireguard.exe not found after installation."
+          }
+
+          if (-not (Test-Path $wgExe)) {
+              throw "wg.exe not found after installation."
+          }
+
           Write-Host "WireGuard installed successfully."
 
+
+      # =========================================
+      # CREATE CONFIG
+      # =========================================
 
       - name: Create WireGuard configuration
         shell: powershell
         env:
           WG_CONFIG: ${{ secrets.WG }}
         run: |
-          Write-Host "Creating WireGuard configuration..."
+          Write-Host "========================================"
+          Write-Host "       CREATING WIREGUARD CONFIG"
+          Write-Host "========================================"
 
           if ([string]::IsNullOrWhiteSpace($env:WG_CONFIG)) {
               throw "GitHub Secret WG is empty."
           }
 
-          $configDir = `
-            "C:\Program Files\WireGuard\Data\Configurations"
+          $configDir = "C:\WireGuard"
+          $configPath = "$configDir\rdp.conf"
 
           New-Item `
             -ItemType Directory `
             -Path $configDir `
             -Force | Out-Null
-
-          $configPath = "$configDir\rdp.conf"
 
           [System.IO.File]::WriteAllText(
               $configPath,
@@ -133,20 +173,22 @@ jobs:
               throw "rdp.conf was not created."
           }
 
-          Write-Host "WireGuard configuration created."
+          Write-Host "Configuration created successfully."
 
+          Get-Item $configPath |
+            Select-Object FullName, Length
+
+
+      # =========================================
+      # CONNECT WIREGUARD
+      # =========================================
 
       - name: Connect WireGuard
         shell: powershell
         run: |
-          $wg = `
-            "C:\Program Files\WireGuard\wireguard.exe"
-
-          $wgExe = `
-            "C:\Program Files\WireGuard\wg.exe"
-
-          $config = `
-            "C:\Program Files\WireGuard\Data\Configurations\rdp.conf"
+          $wg = "C:\Program Files\WireGuard\wireguard.exe"
+          $wgExe = "C:\Program Files\WireGuard\wg.exe"
+          $config = "C:\WireGuard\rdp.conf"
 
           Write-Host "========================================"
           Write-Host "       CONNECTING WIREGUARD"
@@ -168,6 +210,10 @@ jobs:
               throw "wireguard.exe not found."
           }
 
+          if (-not (Test-Path $wgExe)) {
+              throw "wg.exe not found."
+          }
+
           if (-not (Test-Path $config)) {
               throw "rdp.conf not found."
           }
@@ -177,9 +223,18 @@ jobs:
 
           & $wg /installtunnelservice $config
 
+          $exitCode = $LASTEXITCODE
+
           Write-Host ""
           Write-Host "WireGuard exit code:"
-          Write-Host $LASTEXITCODE
+          Write-Host $exitCode
+
+          if ($exitCode -ne 0) {
+              throw "WireGuard tunnel service installation failed."
+          }
+
+          Write-Host ""
+          Write-Host "Waiting for tunnel..."
 
           Start-Sleep -Seconds 10
 
@@ -210,19 +265,11 @@ jobs:
           Write-Host "       WG STATUS"
           Write-Host "========================================"
 
-          if (Test-Path $wgExe) {
+          & $wgExe show
 
-              & $wgExe show
-
-              Write-Host ""
-              Write-Host "wg.exe exit code:"
-              Write-Host $LASTEXITCODE
-
-          } else {
-
-              Write-Host "wg.exe not found!"
-
-          }
+          Write-Host ""
+          Write-Host "wg.exe exit code:"
+          Write-Host $LASTEXITCODE
 
           Write-Host ""
           Write-Host "========================================"
@@ -290,22 +337,22 @@ jobs:
           ping.exe -n 4 172.31.250.1
 
           Write-Host ""
-          Write-Host "Ping finished."
-          Write-Host "Continuing workflow..."
+          Write-Host "WireGuard test completed."
 
-          exit 0
 
+      # =========================================
+      # TAILSCALE INSTALL
+      # =========================================
 
       - name: Install Tailscale
         shell: powershell
         run: |
-          Write-Host "Installing Tailscale..."
+          Write-Host "========================================"
+          Write-Host "       INSTALLING TAILSCALE"
+          Write-Host "========================================"
 
-          $url = `
-            "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-
-          $installer = `
-            "$env:TEMP\tailscale.msi"
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
 
           Invoke-WebRequest `
             -Uri $url `
@@ -315,27 +362,39 @@ jobs:
               throw "Tailscale installer was not downloaded."
           }
 
-          Start-Process `
+          $process = Start-Process `
             -FilePath "msiexec.exe" `
             -ArgumentList "/i `"$installer`" /quiet /norestart" `
-            -Wait
+            -Wait `
+            -PassThru
+
+          Write-Host "Tailscale installer exit code: $($process.ExitCode)"
+
+          if ($process.ExitCode -ne 0) {
+              throw "Tailscale installation failed."
+          }
 
           Write-Host "Tailscale installed."
 
+
+      # =========================================
+      # TAILSCALE CONNECT
+      # =========================================
 
       - name: Connect Tailscale
         shell: powershell
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          Write-Host "Connecting to Tailscale..."
+          Write-Host "========================================"
+          Write-Host "       CONNECTING TAILSCALE"
+          Write-Host "========================================"
 
           if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
               throw "TS_AUTHKEY is empty."
           }
 
-          $tailscale = `
-            "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscale)) {
               throw "Tailscale executable not found."
@@ -344,6 +403,10 @@ jobs:
           & $tailscale up `
             --authkey="$env:TS_AUTHKEY" `
             --hostname="github-windows-rdp"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Tailscale connection failed."
+          }
 
           Start-Sleep -Seconds 5
 
@@ -358,29 +421,44 @@ jobs:
           Write-Host "========================================"
           Write-Host "       WINDOWS RDP IS READY"
           Write-Host "========================================"
+
           Write-Host ""
           Write-Host "WireGuard:"
           Write-Host "Tunnel: rdp"
           Write-Host "Server: 172.31.250.1"
+
           Write-Host ""
           Write-Host "Tailscale IP:"
           Write-Host $ip
+
           Write-Host ""
           Write-Host "RDP Address:"
           Write-Host "$ip`:3389"
+
           Write-Host ""
           Write-Host "Username:"
           Write-Host "runneradmin"
+
           Write-Host ""
           Write-Host "Password:"
           Write-Host "The value stored in RDP_PASSWORD"
+
           Write-Host ""
           Write-Host "========================================"
 
 
+      # =========================================
+      # RDP CHECK
+      # =========================================
+
       - name: Check RDP
         shell: powershell
         run: |
+          Write-Host "========================================"
+          Write-Host "           RDP CHECK"
+          Write-Host "========================================"
+
+          Write-Host ""
           Write-Host "===== RDP Service ====="
 
           Get-Service `
@@ -391,13 +469,24 @@ jobs:
 
           Get-NetTCPConnection `
             -LocalPort 3389 `
-            -ErrorAction SilentlyContinue
+            -ErrorAction SilentlyContinue |
+            Format-Table `
+              LocalAddress,
+              LocalPort,
+              State,
+              OwningProcess
 
+
+      # =========================================
+      # KEEP RUNNER ALIVE
+      # =========================================
 
       - name: Keep runner alive
         shell: powershell
         run: |
-          Write-Host "Windows RDP runner is running."
+          Write-Host "========================================"
+          Write-Host "      WINDOWS RDP RUNNER ACTIVE"
+          Write-Host "========================================"
 
           while ($true) {
 
@@ -406,8 +495,7 @@ jobs:
               Write-Host "        WIREGUARD STATUS"
               Write-Host "========================================"
 
-              $wgExe = `
-                "C:\Program Files\WireGuard\wg.exe"
+              $wgExe = "C:\Program Files\WireGuard\wg.exe"
 
               if (Test-Path $wgExe) {
                   & $wgExe show
@@ -418,8 +506,7 @@ jobs:
               Write-Host "        TAILSCALE STATUS"
               Write-Host "========================================"
 
-              $tailscale = `
-                "$env:ProgramFiles\Tailscale\tailscale.exe"
+              $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
               if (Test-Path $tailscale) {
                   & $tailscale status
