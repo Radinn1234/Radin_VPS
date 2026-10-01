@@ -9,6 +9,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
+
       - name: Enable RDP
         shell: powershell
         env:
@@ -21,7 +22,8 @@ jobs:
             -Name "fDenyTSConnections" `
             -Value 0
 
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
 
           $password = ConvertTo-SecureString `
             $env:RDP_PASSWORD `
@@ -33,12 +35,20 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($null -eq $user) {
+
+              Write-Host "Creating runneradmin..."
+
               New-LocalUser `
                 -Name "runneradmin" `
                 -Password $password `
-                -FullName "RDP Administrator"
-          }
-          else {
+                -FullName "RDP Administrator" `
+                -Description "Temporary RDP user"
+
+          } else {
+
+              Write-Host "runneradmin already exists."
+              Write-Host "Updating password..."
+
               Set-LocalUser `
                 -Name "runneradmin" `
                 -Password $password
@@ -58,6 +68,7 @@ jobs:
 
           Write-Host "RDP enabled successfully."
 
+
       - name: Install WireGuard
         shell: powershell
         run: |
@@ -70,12 +81,26 @@ jobs:
             -Uri $url `
             -OutFile $installer
 
-          Start-Process `
+          if (-not (Test-Path $installer)) {
+              throw "WireGuard installer was not downloaded."
+          }
+
+          Write-Host "Installing WireGuard..."
+
+          $process = Start-Process `
             -FilePath "msiexec.exe" `
             -ArgumentList "/i `"$installer`" /qn /norestart" `
-            -Wait
+            -Wait `
+            -PassThru
 
-          Write-Host "WireGuard installed."
+          Write-Host "Installer exit code: $($process.ExitCode)"
+
+          if ($process.ExitCode -ne 0) {
+              throw "WireGuard installation failed."
+          }
+
+          Write-Host "WireGuard installed successfully."
+
 
       - name: Create WireGuard configuration
         shell: powershell
@@ -88,7 +113,8 @@ jobs:
               throw "GitHub Secret WG is empty."
           }
 
-          $configDir = "C:\Program Files\WireGuard\Data\Configurations"
+          $configDir = `
+            "C:\Program Files\WireGuard\Data\Configurations"
 
           New-Item `
             -ItemType Directory `
@@ -103,63 +129,163 @@ jobs:
               [System.Text.UTF8Encoding]::new($false)
           )
 
+          if (-not (Test-Path $configPath)) {
+              throw "rdp.conf was not created."
+          }
+
           Write-Host "WireGuard configuration created."
+
 
       - name: Connect WireGuard
         shell: powershell
         run: |
-          Write-Host "Connecting WireGuard..."
+          $wg = `
+            "C:\Program Files\WireGuard\wireguard.exe"
 
-          $wg = "C:\Program Files\WireGuard\wireguard.exe"
-          $wgExe = "C:\Program Files\WireGuard\wg.exe"
-          $config = "C:\Program Files\WireGuard\Data\Configurations\rdp.conf"
+          $wgExe = `
+            "C:\Program Files\WireGuard\wg.exe"
+
+          $config = `
+            "C:\Program Files\WireGuard\Data\Configurations\rdp.conf"
+
+          Write-Host "========================================"
+          Write-Host "       CONNECTING WIREGUARD"
+          Write-Host "========================================"
+
+          Write-Host ""
+          Write-Host "Checking files..."
+
+          Write-Host "wireguard.exe:"
+          Test-Path $wg
+
+          Write-Host "wg.exe:"
+          Test-Path $wgExe
+
+          Write-Host "rdp.conf:"
+          Test-Path $config
+
+          if (-not (Test-Path $wg)) {
+              throw "wireguard.exe not found."
+          }
+
+          if (-not (Test-Path $config)) {
+              throw "rdp.conf not found."
+          }
+
+          Write-Host ""
+          Write-Host "Installing WireGuard tunnel service..."
 
           & $wg /installtunnelservice $config
+
+          Write-Host ""
+          Write-Host "WireGuard exit code:"
+          Write-Host $LASTEXITCODE
 
           Start-Sleep -Seconds 10
 
           Write-Host ""
-          Write-Host "===== WireGuard Services ====="
+          Write-Host "========================================"
+          Write-Host "       WIREGUARD SERVICES"
+          Write-Host "========================================"
 
           Get-Service |
             Where-Object {
-              $_.Name -like "WireGuardTunnel*"
+              $_.Name -like "*WireGuard*"
             } |
-            Format-Table Name, Status, StartType
+            Format-List Name, DisplayName, Status, StartType
 
           Write-Host ""
-          Write-Host "===== WireGuard Interface ====="
+          Write-Host "========================================"
+          Write-Host "       WIREGUARD PROCESSES"
+          Write-Host "========================================"
+
+          Get-Process |
+            Where-Object {
+              $_.ProcessName -like "*wireguard*"
+            } |
+            Format-Table ProcessName, Id
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       WG STATUS"
+          Write-Host "========================================"
 
           if (Test-Path $wgExe) {
+
               & $wgExe show
+
+              Write-Host ""
+              Write-Host "wg.exe exit code:"
+              Write-Host $LASTEXITCODE
+
+          } else {
+
+              Write-Host "wg.exe not found!"
+
           }
 
           Write-Host ""
-          Write-Host "===== Network Adapters ====="
+          Write-Host "========================================"
+          Write-Host "       NETWORK ADAPTERS"
+          Write-Host "========================================"
 
           Get-NetAdapter |
-            Format-Table Name, InterfaceDescription, Status
+            Format-Table `
+              Name,
+              InterfaceDescription,
+              Status
 
           Write-Host ""
-          Write-Host "===== WireGuard IP ====="
+          Write-Host "========================================"
+          Write-Host "       IPV4 ADDRESSES"
+          Write-Host "========================================"
 
           Get-NetIPAddress `
             -AddressFamily IPv4 |
-            Where-Object {
-              $_.IPAddress -like "172.31.*"
-            } |
-            Format-Table IPAddress, InterfaceAlias
+            Format-Table `
+              IPAddress,
+              InterfaceAlias
 
           Write-Host ""
-          Write-Host "===== Route ====="
+          Write-Host "========================================"
+          Write-Host "       ROUTES"
+          Write-Host "========================================"
 
           Get-NetRoute `
-            -DestinationPrefix "172.31.250.1/32" `
             -ErrorAction SilentlyContinue |
-            Format-Table DestinationPrefix, NextHop, InterfaceAlias, RouteMetric
+            Where-Object {
+              $_.DestinationPrefix -like "172.31.*"
+            } |
+            Format-Table `
+              DestinationPrefix,
+              NextHop,
+              InterfaceAlias,
+              RouteMetric
 
           Write-Host ""
-          Write-Host "===== Ping 172.31.250.1 ====="
+          Write-Host "========================================"
+          Write-Host "       WIREGUARD EVENT LOGS"
+          Write-Host "========================================"
+
+          Get-WinEvent `
+            -LogName System `
+            -MaxEvents 200 `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.ProviderName -like "*WireGuard*"
+            } |
+            Select-Object `
+              TimeCreated,
+              ProviderName,
+              Id,
+              LevelDisplayName,
+              Message |
+            Format-List
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       PING AZAR"
+          Write-Host "========================================"
 
           ping.exe -n 4 172.31.250.1
 
@@ -169,17 +295,25 @@ jobs:
 
           exit 0
 
+
       - name: Install Tailscale
         shell: powershell
         run: |
           Write-Host "Installing Tailscale..."
 
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $installer = "$env:TEMP\tailscale.msi"
+          $url = `
+            "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+
+          $installer = `
+            "$env:TEMP\tailscale.msi"
 
           Invoke-WebRequest `
             -Uri $url `
             -OutFile $installer
+
+          if (-not (Test-Path $installer)) {
+              throw "Tailscale installer was not downloaded."
+          }
 
           Start-Process `
             -FilePath "msiexec.exe" `
@@ -188,6 +322,7 @@ jobs:
 
           Write-Host "Tailscale installed."
 
+
       - name: Connect Tailscale
         shell: powershell
         env:
@@ -195,7 +330,16 @@ jobs:
         run: |
           Write-Host "Connecting to Tailscale..."
 
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
+              throw "TS_AUTHKEY is empty."
+          }
+
+          $tailscale = `
+            "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+              throw "Tailscale executable not found."
+          }
 
           & $tailscale up `
             --authkey="$env:TS_AUTHKEY" `
@@ -215,7 +359,8 @@ jobs:
           Write-Host "       WINDOWS RDP IS READY"
           Write-Host "========================================"
           Write-Host ""
-          Write-Host "WireGuard: CONNECTED"
+          Write-Host "WireGuard:"
+          Write-Host "Tunnel: rdp"
           Write-Host "Server: 172.31.250.1"
           Write-Host ""
           Write-Host "Tailscale IP:"
@@ -232,12 +377,14 @@ jobs:
           Write-Host ""
           Write-Host "========================================"
 
+
       - name: Check RDP
         shell: powershell
         run: |
           Write-Host "===== RDP Service ====="
 
-          Get-Service -Name TermService
+          Get-Service `
+            -Name TermService
 
           Write-Host ""
           Write-Host "===== Port 3389 ====="
@@ -245,6 +392,7 @@ jobs:
           Get-NetTCPConnection `
             -LocalPort 3389 `
             -ErrorAction SilentlyContinue
+
 
       - name: Keep runner alive
         shell: powershell
@@ -254,18 +402,24 @@ jobs:
           while ($true) {
 
               Write-Host ""
-              Write-Host "===== WireGuard Status ====="
+              Write-Host "========================================"
+              Write-Host "        WIREGUARD STATUS"
+              Write-Host "========================================"
 
-              $wgExe = "C:\Program Files\WireGuard\wg.exe"
+              $wgExe = `
+                "C:\Program Files\WireGuard\wg.exe"
 
               if (Test-Path $wgExe) {
                   & $wgExe show
               }
 
               Write-Host ""
-              Write-Host "===== Tailscale Status ====="
+              Write-Host "========================================"
+              Write-Host "        TAILSCALE STATUS"
+              Write-Host "========================================"
 
-              $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+              $tailscale = `
+                "$env:ProgramFiles\Tailscale\tailscale.exe"
 
               if (Test-Path $tailscale) {
                   & $tailscale status
