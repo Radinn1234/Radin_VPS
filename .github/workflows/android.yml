@@ -1,0 +1,77 @@
+
+name: Android 17 Cloud Phone
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install Android and VNC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb x11vnc novnc websockify
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "emulator" "system-images;android-37;google_apis;x86_64"
+          echo "DISPLAY=:0" >> "$GITHUB_ENV"
+
+      - name: Create Android 17 device
+        run: |
+          echo "no" | avdmanager create avd \
+            -n CloudPhone \
+            -k "system-images;android-37;google_apis;x86_64" \
+            -d pixel_6
+
+      - name: Start graphical display
+        run: |
+          Xvfb :0 -screen 0 1080x1920x24 &
+          sleep 3
+
+      - name: Start Android Emulator
+        run: |
+          nohup emulator -avd CloudPhone \
+            -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect \
+            -no-snapshot > /tmp/emulator.log 2>&1 &
+
+          adb wait-for-device
+          timeout 300 bash -c \
+            'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'
+
+      - name: Start browser control
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          x11vnc -display :0 -forever -shared \
+            -rfbport 5900 -passwd "$VNC_PASSWORD" \
+            -noxdamage -bg
+
+          websockify --web=/usr/share/novnc/ \
+            6080 localhost:5900 > /tmp/websockify.log 2>&1 &
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Show connection address
+        run: |
+          IP=$(tailscale ip -4)
+          echo "## Android 17 is ready" >> "$GITHUB_STEP_SUMMARY"
+          echo "Open this address while connected to Tailscale:" >> "$GITHUB_STEP_SUMMARY"
+          echo "http://$IP:6080/vnc.html?autoconnect=true" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep Android running
+        run: sleep 21000
