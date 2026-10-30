@@ -62,32 +62,12 @@ jobs:
           echo "DISPLAY=:0" >> "$GITHUB_ENV"
           sleep 3
 
-      - name: Start Android Emulator
-        run: |
-          nohup emulator -avd CloudPhone \
-            -no-audio \
-            -no-boot-anim \
-            -no-snapshot \
-            -gpu swiftshader \
-            -accel auto \
-            > /tmp/emulator.log 2>&1 &
-
-          timeout 180 adb wait-for-device
-
-          timeout 420 bash -c '
-            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do
-              sleep 5
-            done
-          '
-
-          echo "Android 17 booted successfully!"
-
       - name: Connect Tailscale
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
 
-      - name: Start browser control
+      - name: Start VNC before Android
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
@@ -99,6 +79,8 @@ jobs:
           fi
 
           IP=$(tailscale ip -4)
+
+          echo "Tailscale IP: $IP"
 
           x11vnc \
             -display :0 \
@@ -116,12 +98,56 @@ jobs:
             6080 127.0.0.1:5900 \
             > /tmp/websockify.log 2>&1 &
 
-          sleep 3
+          sleep 5
+
+          curl -f "http://$IP:6080/vnc.html" -o /dev/null
 
           echo "## Android 17 Cloud Phone" >> "$GITHUB_STEP_SUMMARY"
-          echo "Android is ready!" >> "$GITHUB_STEP_SUMMARY"
+          echo "VNC server is running!" >> "$GITHUB_STEP_SUMMARY"
           echo "http://$IP:6080/vnc.html?autoconnect=true" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Keep Android running
+          echo "VNC is ready!"
+
+      - name: Start Android Emulator
         run: |
+          set +e
+
+          nohup emulator -avd CloudPhone \
+            -no-audio \
+            -no-boot-anim \
+            -no-snapshot \
+            -gpu swiftshader \
+            -accel auto \
+            > /tmp/emulator.log 2>&1 &
+
+          echo "Waiting for Android device..."
+
+          if ! timeout 180 adb wait-for-device; then
+            echo "ADB could not detect the emulator!"
+            echo "===== EMULATOR LOG ====="
+            cat /tmp/emulator.log
+            echo "===== ADB DEVICES ====="
+            adb devices -l
+            exit 1
+          fi
+
+          echo "Device detected. Waiting for Android boot..."
+
+          if ! timeout 420 bash -c '
+            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do
+              sleep 5
+            done
+          '; then
+            echo "Android boot timed out!"
+            echo "===== EMULATOR LOG ====="
+            cat /tmp/emulator.log
+            exit 1
+          fi
+
+          echo "Android 17 booted successfully!"
+
+      - name: Keep VNC alive
+        if: always()
+        run: |
+          echo "VNC remains available for debugging."
           sleep 20000
