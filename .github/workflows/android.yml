@@ -42,7 +42,7 @@ jobs:
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "emulator" \
-            "system-images;android-37;google_apis;x86_64"
+            "system-images;android-37.0;google_apis_ps16k;x86_64"
 
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
@@ -53,7 +53,7 @@ jobs:
         run: |
           echo "no" | avdmanager create avd \
             -n CloudPhone \
-            -k "system-images;android-37;google_apis;x86_64" \
+            -k "system-images;android-37.0;google_apis_ps16k;x86_64" \
             -d pixel_6
 
       - name: Start virtual display
