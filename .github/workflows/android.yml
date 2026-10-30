@@ -81,6 +81,8 @@ jobs:
           IP=$(tailscale ip -4)
           echo "Tailscale IP: $IP"
 
+          echo "Starting x11vnc..."
+
           x11vnc \
             -display :0 \
             -localhost \
@@ -93,10 +95,11 @@ jobs:
 
           sleep 2
 
+          echo "Starting websockify..."
+
           websockify \
-            --web=/usr/share/novnc/ \
-            --host=0.0.0.0 \
-            6080 127.0.0.1:5900 \
+            --web /usr/share/novnc \
+            0.0.0.0:6080 127.0.0.1:5900 \
             > /tmp/websockify.log 2>&1 &
 
           echo $! > /tmp/websockify.pid
@@ -112,21 +115,21 @@ jobs:
           echo "===== PORT 6080 ====="
           sudo ss -lntp | grep 6080 || true
 
-          echo "===== LOCAL VNC TEST ====="
-          curl -v --max-time 10 \
+          echo "===== LOCAL TEST ====="
+          curl -f --max-time 10 \
             http://127.0.0.1:6080/vnc.html \
             -o /dev/null
 
-          echo "===== TAILSCALE VNC TEST ====="
-          curl -v --max-time 10 \
+          echo "===== TAILSCALE TEST ====="
+          curl -f --max-time 10 \
             "http://$IP:6080/vnc.html" \
             -o /dev/null
 
           echo "## Android 17 Cloud Phone" >> "$GITHUB_STEP_SUMMARY"
-          echo "VNC server is running!" >> "$GITHUB_STEP_SUMMARY"
+          echo "VNC is ready!" >> "$GITHUB_STEP_SUMMARY"
           echo "http://$IP:6080/vnc.html?autoconnect=true" >> "$GITHUB_STEP_SUMMARY"
 
-          echo "VNC is ready!"
+          echo "VNC READY!"
 
       - name: Start Android Emulator
         run: |
