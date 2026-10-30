@@ -79,7 +79,6 @@ jobs:
           fi
 
           IP=$(tailscale ip -4)
-
           echo "Tailscale IP: $IP"
 
           x11vnc \
@@ -92,15 +91,36 @@ jobs:
             -noxdamage \
             -bg
 
+          sleep 2
+
           websockify \
             --web=/usr/share/novnc/ \
-            --host="$IP" \
+            --host=0.0.0.0 \
             6080 127.0.0.1:5900 \
             > /tmp/websockify.log 2>&1 &
 
+          echo $! > /tmp/websockify.pid
+
           sleep 5
 
-          curl -f "http://$IP:6080/vnc.html" -o /dev/null
+          echo "===== WEBSOCKIFY LOG ====="
+          cat /tmp/websockify.log || true
+
+          echo "===== PROCESSES ====="
+          ps aux | grep -E 'websockify|x11vnc' || true
+
+          echo "===== PORT 6080 ====="
+          sudo ss -lntp | grep 6080 || true
+
+          echo "===== LOCAL VNC TEST ====="
+          curl -v --max-time 10 \
+            http://127.0.0.1:6080/vnc.html \
+            -o /dev/null
+
+          echo "===== TAILSCALE VNC TEST ====="
+          curl -v --max-time 10 \
+            "http://$IP:6080/vnc.html" \
+            -o /dev/null
 
           echo "## Android 17 Cloud Phone" >> "$GITHUB_STEP_SUMMARY"
           echo "VNC server is running!" >> "$GITHUB_STEP_SUMMARY"
@@ -149,5 +169,5 @@ jobs:
       - name: Keep VNC alive
         if: always()
         run: |
-          echo "VNC remains available for debugging."
+          echo "Keeping session alive for debugging..."
           sleep 20000
