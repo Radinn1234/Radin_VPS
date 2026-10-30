@@ -16,74 +16,112 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb x11vnc novnc websockify openjdk-17-jdk
+          sudo apt-get install -y \
+            xvfb x11vnc novnc websockify \
+            openjdk-17-jdk wget unzip curl
 
       - name: Install Android SDK
         run: |
-          mkdir -p "$HOME/android-sdk"
-          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
-          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
-          echo "$HOME/android-sdk/emulator" >> "$GITHUB_PATH"
+          set -e
 
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip -O /tmp/cmdline.zip
-          mkdir -p "$HOME/android-sdk/cmdline-tools/latest"
-          unzip -q /tmp/cmdline.zip -d /tmp/cmdline
-          mv /tmp/cmdline/cmdline-tools/* "$HOME/android-sdk/cmdline-tools/latest/"
+          export ANDROID_HOME="$HOME/android-sdk"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          cd /tmp
 
-          yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "emulator" "system-images;android-37;google_apis;x86_64"
+          wget -q \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip \
+            -O cmdline.zip
 
-      - name: Create Android 17 emulator
+          unzip -q cmdline.zip
+          mv cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses || true
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "emulator" \
+            "system-images;android-37;google_apis;x86_64"
+
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+      - name: Create Android 17 device
         run: |
           echo "no" | avdmanager create avd \
             -n CloudPhone \
             -k "system-images;android-37;google_apis;x86_64" \
             -d pixel_6
 
-      - name: Start display
+      - name: Start virtual display
         run: |
           Xvfb :0 -screen 0 1080x1920x24 &
+          echo "DISPLAY=:0" >> "$GITHUB_ENV"
           sleep 3
 
-      - name: Start Android
+      - name: Start Android Emulator
         run: |
-          emulator -avd CloudPhone \
-            -no-audio -no-boot-anim \
-            -gpu swiftshader_indirect \
-            -no-snapshot > /tmp/emulator.log 2>&1 &
+          nohup emulator -avd CloudPhone \
+            -no-audio \
+            -no-boot-anim \
+            -no-snapshot \
+            -gpu swiftshader \
+            -accel auto \
+            > /tmp/emulator.log 2>&1 &
 
-          adb wait-for-device
-          timeout 300 bash -c \
-            'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'
+          timeout 180 adb wait-for-device
+
+          timeout 420 bash -c '
+            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do
+              sleep 5
+            done
+          '
+
+          echo "Android 17 booted successfully!"
 
       - name: Connect Tailscale
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
 
-      - name: Start VNC
+      - name: Start browser control
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
+          set -e
+
           if [ -z "$VNC_PASSWORD" ]; then
-            echo "VNC_PASSWORD secret is missing"
+            echo "VNC_PASSWORD secret is missing!"
             exit 1
           fi
 
-          x11vnc -display :0 -forever -shared \
-            -rfbport 5900 -passwd "$VNC_PASSWORD" \
-            -noxdamage -bg
-
-          websockify --web=/usr/share/novnc/ \
-            6080 localhost:5900 > /tmp/websockify.log 2>&1 &
-
-      - name: Show connection address
-        run: |
           IP=$(tailscale ip -4)
+
+          x11vnc \
+            -display :0 \
+            -localhost \
+            -forever \
+            -shared \
+            -rfbport 5900 \
+            -passwd "$VNC_PASSWORD" \
+            -noxdamage \
+            -bg
+
+          websockify \
+            --web=/usr/share/novnc/ \
+            --host="$IP" \
+            6080 127.0.0.1:5900 \
+            > /tmp/websockify.log 2>&1 &
+
+          sleep 3
+
           echo "## Android 17 Cloud Phone" >> "$GITHUB_STEP_SUMMARY"
-          echo "Open this address while connected to Tailscale:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Android is ready!" >> "$GITHUB_STEP_SUMMARY"
           echo "http://$IP:6080/vnc.html?autoconnect=true" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep Android running
-        run: sleep 21000
+        run: |
+          sleep 20000
